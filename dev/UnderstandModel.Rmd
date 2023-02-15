@@ -1,0 +1,193 @@
+---
+title: "Understand The Model"
+author: "Alexandra Sarafoglou"
+date: "2022-11-15"
+output: pdf_document
+---
+
+```{r load-packages}
+library(LaplacesDemon)
+library(stats)
+ylim <- c(0, 1)
+```
+
+
+# Model Equation
+
+The probability that a participants agrees that a quantifier is true depends on the vagueness (scale), threshold (midpoint), and the motor error rate (asymptote). 
+
+$$\text{response} ~ \frac{\text{asymptote}}{1 + exp(\text{midpoint} - \text{proportion})/\text{scale}}$$
+
+```{r reparametrized-model-easy}
+# Easy model: mu is fixed
+gamma <- 0               # probability of making a response error
+mu    <- seq(-5, 5, 0.1)   # real value encoding the probability to say yes
+p     <- gamma + (1 - 2*gamma) * invlogit(mu)
+plot(mu, p, ylim = ylim)
+```
+
+```{r reparametrized-model-advanced}
+# Easy model: mu is variable
+# beta = 0 (threshold = 0.5) can range between -0.5 and 0.5
+# alpha = 0 (perfect strictness) can range between 0 and ~0.1
+createMu <- function(alpha = 0.05, beta = 0, c = seq(0, 1, 0.01) - 0.5){
+  mu <- (c - beta)/(alpha) 
+  return(mu)
+}
+computeP <- function(alpha = 0.05, beta = 0, gamma = 0, c = seq(0, 1, 0.01) - 0.5){
+  mu <- createMu(beta=beta, alpha=alpha, c=c)
+  p <- gamma + (1 - 2*gamma) * invlogit(mu)
+  return(p)
+}
+
+mu <- createMu(beta = 0, alpha = 0.1) 
+p <- gamma + (1 - 2*gamma) * invlogit(mu)
+plot(mu, p, ylim = ylim)
+```
+
+```{r few}
+# Assuming the quantifier "most" 
+# Threshold around 0.75
+c <- seq(0, 1, 0.01) 
+b <- 0.75 - 0.5
+roi <- c(0.25, 0.4, 0.75, 0.9) - 0.5
+
+#---------------
+
+a <- 0.05
+p <- computeP(beta = b, alpha = a)
+plot(c, p, ylim = ylim, type = 'l', las = 1)
+a0 <- computeP(beta = b, alpha = a, c = roi); round(a0,3) * 100
+
+#---------------
+
+a <- 0.1
+p <- computeP(beta = b, alpha = a)
+plot(c, p, ylim = ylim, type = 'l', las = 1)
+a1 <- computeP(beta = b, alpha = a, c = roi); round(a1,3) * 100
+
+#---------------
+
+a <- 0.2
+p <- computeP(beta = b, alpha = a)
+plot(c, p, ylim = ylim, type = 'l', las = 1)
+a2 <- computeP(beta = b, alpha = a, c = roi); round(a2, 3) * 100
+
+#---------------
+
+a <- 0.3
+p <- computeP(beta = b, alpha = a)
+plot(c, p, ylim = ylim)
+a3 <- computeP(beta = b, alpha = a, c = roi); round(a3,3) * 100
+
+#---------------
+
+a <- 1
+p <- computeP(beta = b, alpha = a)
+plot(c, p, ylim = ylim, type = 'l', las = 1)
+a4 <- computeP(beta = b, alpha = a, c = roi); round(a4,3) * 100
+```
+
+Insights for the arbitrary quantifier "most":
+* An alpha of 0.2 or higher makes no sense.
+* Problem that proportions that are too low are considered valid. But also proportions that are much higher than the threshold are not considered valid.
+* Alpha 0.05: Very sharp distinction. Participants respond to proportions of 25% and 45% in 0 and 0.1% of the cases with "yes". Probability to respond "yes" to proportion 95% is 95%
+* Alpha 0.1: Still good distinction. Participants respond to proportions of 25% and 45% in 1% and 3% of the cases with "yes". 
+Probability to respond "yes" to proportion 95% is 82%
+* Alpha 0.2: Prediction is in conflict with theory. Participants respond to proportions of 25% and 45% in 7.5% and 15% of the cases with "yes". Probability to respond "yes" to proportion 95% is only 68%
+Probability to respond "yes" to proportion 95% are 82%
+* Alpha 0.3: Prediction is in conflict with theory. Participants respond to proportions of 25% and 45% in 16% and 24% of the cases with "yes". Probability to respond "yes" to proportion 95% is only 62%
+* Empirical evidence: vagueness parameters alpha range between 0.002 to 0.016
+
+# Plots drawn based on group-level parameters in JMP paper (page 11)
+
+```{r visualize-empirical-results}
+p1 <- computeP(alpha = 0.016, beta = -0.103, gamma = 0.062) # Few
+p2 <- computeP(alpha = 0.002, beta = -0.006, gamma = 0.074) # Fewer than half
+p3 <- computeP(alpha = 0.019, beta = -0.061, gamma = 0.048) # Many
+p4 <- computeP(alpha = 0.009, beta = 0.001, gamma = 0.042)  # More than half
+p5 <- computeP(alpha = 0.009, beta = 0.029, gamma = 0.047)  # Most
+
+plot(c, p1, ylim = ylim, las = 1, type='l', lwd = 2) # Few
+lines(c, p2, col='blue', lwd = 2)  # Fewer than half
+lines(c, p3, col='green', lwd = 2) # Many
+lines(c, p4, col='darkgrey', lwd = 2) # More than half
+lines(c, p5, col='red', lwd = 2) # Most
+```
+
+Insights from empirical effects:
+* On the group-level, we are dealing with tiny effects and differences between quantifiers
+* Maybe we want to get quantifiers that are located more at the extremes and quantifiers that are more vague than the ones we look at
+* If downward entailing quantifiers are the opposite of upward entailing quantifiers: their parameters should be equal
+* Assumption regarding response errors: if it carries no information about meaning, it should be the same across all quantifiers within a person. If it is related to complexity, than downward entailing quantifiers should have higher response errors than upward entailing. If they do carry meaning, than symmetry might not be appropriate. Note: they do carry meaning (about the processing costs) so each quantifier has their own unique error rate
+
+# Alpha parameters: Should never be higher than 0.2
+
+```{r visualize priors}
+visualizeAlpha <- function(nu, sigma2, xlim = c(0, 3)){
+  x <- seq(xlim[1], xlim[2], length.out=1e3)
+  density_alpha <- dlnorm(x, nu, sqrt(sigma2))
+  return(plot(x, density_alpha, type = 'l', las = 1, xlim = xlim))
+}
+
+visualizeBeta <- function(nu, sigma2, xlim = c(-1, 1)){
+  x <- seq(xlim[1], xlim[2], length.out=1e3)
+  density_beta <- dnorm(x, nu, sqrt(sigma2))
+  return(plot(x, density_beta, type = 'l', las = 1, xlim = xlim))
+}
+
+visualizeGamma <- function(alpha, beta, xlim = c(0, 1)){
+  x <- seq(0, xlim[2], length.out=1e3)
+  density_gamma <- dbeta(x, alpha, beta)
+  return(plot(x, density_gamma, type = 'l', las = 1, xlim = xlim))
+}
+
+hist(rnorm(3e3, 0, 5))
+quantile(rnorm(3e3, 0, 5), c(0.5))
+hist(1/rgamma(3e3, 2, 0.2))
+quantile(1/rgamma(3e3, 2, 0.2), c(0.5)) # sigma2
+
+# Visualize alpha based on median of the prior distributions
+visualizeAlpha(nu=0, sigma2=0.12)
+visualizeBeta(nu=0, sigma2=0.12)
+# This is spot on
+visualizeGamma(alpha=2, beta=20)
+# This is spot on
+```
+
+
+
+```{r visualize priors-adjusted}
+# Reasonable priors
+# Nu centered around -4
+
+# Visualize alpha based on median of the prior distributions
+visualizeAlpha(nu=-4, sigma2=1, xlim = c(0, 0.1))
+visualizeAlpha(nu=-4, sigma2=0.5, xlim = c(0, 0.1))
+visualizeAlpha(nu=-1, sigma2=2, xlim = c(0, 0.5))
+
+# -1; 2
+# nu_a <- rnorm(na, -1, 5)         # Normal(-1, 5)
+# sigma2_a <- 1/rgamma(na, 2, 3.3) # inv-gamma (2, 3.3)
+
+# adjusted hyperpriors that serve alpha
+na <- 10e3
+# -4; 0.5
+nu_a <- rnorm(na, -4, 1)         
+quantile(nu_a, c(0.5))
+sigma2_a <- 1/rgamma(na, 1, 0.5); hist(sigma2_a[sigma2_a < 0.5])
+quantile(sigma2_a, c(0.5)) 
+
+a_samp <- NULL
+for(i in 1:na){
+  a_samp[i] <- rlnorm(1, meanlog = nu_a[i], sdlog = sqrt(sigma2_a[i]))
+}
+plot(density(a_samp[a_samp < 0.1]))
+visualizeAlpha(nu=-4, sigma2=0.75, xlim = c(0, 0.1))
+```
+
+Insights from adjusted alpha prior:
+* Values close to zero should be favored over values larger than zero
+* We can maybe even fix the nu and only work with the sigma parameter. That makes the model much more easy to compute
+
+
