@@ -1,0 +1,63 @@
+---
+title: "model_development"
+author: "AlexandraSarafoglou"
+date: "2023-03-28"
+output: html_document
+---
+
+```{r read-data}
+
+dat <- read.csv('../data/simulated-data.csv', header = TRUE)
+
+```
+
+
+```{r run-models-inits}
+run_all    <- FALSE
+prior      <- TRUE
+modelname  <- 'mod_short_orig'
+niter      <- 1000
+nwarmup    <- 500
+nchains    <- 3
+addparams  <- NULL
+
+if(run_all){
+  
+  filename <- list.files('../models/')
+  prior    <- grepl('_prior', filename)
+  
+} else {
+  
+ filename <- ifelse(prior,  
+                    paste0(modelname, '_prior.stan'), 
+                    paste0(modelname, '.stan'))
+  
+}
+
+model_list <- list()
+
+for(i in 1:length(modelname)){
+  
+  model_list[[i]] <- rstan::stan_model(file = paste0('../models/', filename))
+  
+}
+```
+
+```{r run-models}
+
+for(i in 1:length(model_list)){
+  
+  predat    <- getDat(dat, prior = prior[i])
+  logmodfit <- myRunner(predat
+                      , prior = prior[i]
+                      , addparams = addparams
+                      , mod = model_list[[i]]
+                      , iter = niter
+                      , warmup = nwarmup
+                      , control = list(adapt_delta = .97, max_treedepth = 14)
+                      , nchains = nchains)
+  save(logmodfit, file = paste0('../output/', filename[i], '.rda'))
+  
+}
+
+```

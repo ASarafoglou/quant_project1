@@ -175,7 +175,7 @@ na <- 10e3
 # -4; 0.5
 nu_a <- rnorm(na, -4, 1)         
 quantile(nu_a, c(0.5))
-sigma2_a <- 1/rgamma(na, 1, 0.5); hist(sigma2_a[sigma2_a < 0.5])
+sigma2_a <- 1/rgamma(na, 1, 0.5); hist(sigma2_a[sigma2_a < 3])
 quantile(sigma2_a, c(0.5)) 
 
 a_samp <- NULL
@@ -184,6 +184,26 @@ for(i in 1:na){
 }
 plot(density(a_samp[a_samp < 0.1]))
 visualizeAlpha(nu=-4, sigma2=0.75, xlim = c(0, 0.1))
+
+## from inverse gamma to half-t distributions
+# first: visualize sigma_a
+sigma_a <- sqrt(sigma2_a)
+hist(sigma2_a[sigma2_a < 3])
+quantile(sigma2_a, c(0.5)) 
+
+sigma_a_t <- LaplacesDemon::rhalft(na, scale=1, nu=4)
+par(mfrow=c(1, 2))
+hist(sigma_a[sigma_a < 3])
+hist(sigma_a_t[sigma_a_t < 3])
+
+## from inverse gamma to half-t distributions
+# first: visualize sigma
+sigma2 <- 1/rgamma(na, 2, 0.2)
+sigma <- sqrt(sigma2)
+sigma_t <- LaplacesDemon::rhalft(na, scale=0.3, nu=4)
+par(mfrow=c(1, 2))
+hist(sigma[sigma < 2])
+hist(sigma_t[sigma_t < 2])
 ```
 
 Insights from adjusted alpha prior:

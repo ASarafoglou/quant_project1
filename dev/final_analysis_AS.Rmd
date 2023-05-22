@@ -9,9 +9,9 @@ output:
     code_folding: hide
 ---
 
-```{r, message=F}
+```{r, message=FALSE}
 rm(list=ls())
-setwd("~/GitProjects/MostQuantifiersHaveManyMeanings/dev")
+setwd("~/GitProjects/quant_project1/dev")
 library("dplyr")
 library("MCMCpack")
 library("LaplacesDemon")
@@ -28,6 +28,10 @@ library(MASS)
 library(klaR)
 library(rrcov)
 library(olsrr) #SR
+
+# helper functions
+source('../helper_functions/helpers.R')
+source('../helper_functions/init_and_run_short.R')
 ```
 
 ## The Task
@@ -70,18 +74,21 @@ $response = \frac{Asymptote}{1+\exp{(midpoint-proportion)/scale)}$
 ## Study 1 {.tabset .tabset-fade}
 
 ```{r read-data}
-dat <- read.csv("data/exp1-replication-trials.csv")
+dat <- read.csv("../data/exp1-replication-trials.csv")
 #View(dat)
 head(dat)
 nrow(dat)
 length(unique(dat$workerid))
 
 # exclude some participants to make the model run quicker
+set.seed(4491)
 runQuicker <- TRUE
+
 if(runQuicker){
   excludeForSpeed <- sample(unique(dat$workerid), 40)
   dat             <- subset(dat, !(workerid %in% excludeForSpeed))
 }
+
 ```
 
 
@@ -92,9 +99,9 @@ if(runQuicker){
 
 ```{r preprocessing}
 dat$quant <- gsub('\"', '', dat$quant)
-# dat       <- subset(dat, quant %in% c('Few', 'Fewer than half', 'Many', 
-#                                       'More than half', 'Most'))
-dat       <- subset(dat, quant %in% c('Fewer than half', 'More than half'))
+dat       <- subset(dat, quant %in% c('Few', 'Fewer than half', 'Many',
+                                      'More than half', 'Most'))
+dat$qq    <- factor(dat$quant)
 quant_pos <- c('Many', 'More than half', 'Most')
 quant_neg <- c('Few', 'Fewer than half')
 
@@ -102,8 +109,10 @@ quant_neg <- c('Few', 'Fewer than half')
 # dat[dat$quant %in% quant_neg,]$response <- ifelse(dat[dat$quant %in% quant_neg,]$response=="true",0, 1)
 # dat$response <- as.numeric(dat$response)
 
-dat <- dat %>% mutate(percent_cat=cut(percent, breaks=c(0, 20, 40, 60, 80, 100), 
-                  labels=c("1-20","21-40","41-60", "61-80", "81-100")))
+dat <- dat %>% mutate(percent_cat=cut(percent, breaks=c(0, 25, 40, 50, 60, 75, 100), 
+                  labels=c("1-25","26-40","41-50", "51-60", "61-75", "76-100")))
+
+dat$resp <- as.numeric(factor(dat$response)) - 1
 ```
 
 ### Exclusion criteria - Participants
@@ -134,7 +143,8 @@ dat <- subset(dat, !(workerid %in% exclude))
 
 ```{r exclude-participants2}
 # Exlusion 2: participants who failed to obey the monotonicity of quantifiers
-exclude2 <- c(27, 76)
+# or who clearly did not follow the instructions (participant 39)
+exclude2 <- c(27, 39, 76)
 dat <- subset(dat, !(workerid %in% exclude2))
 # subjs        <- unique(dat$workerid)
 # quantifiers  <- unique(dat$quant)
@@ -184,11 +194,9 @@ table(dat$quant, dat$workerid)[, 1]
 hist(dat$percent) # should be approximately uniform
 table(dat$percent>50) # should be approximately half-half
 table(dat$response, dat$quant)
-dat$qq <- factor(dat$quant)
 # 1="All", 2="Few", 3="Fewer than half", 4="Many", 
 # 5="More than half", 6="Most", 7="None"; 8="Some"
 prop <- tapply(as.numeric(factor(dat$response)) - 1, list(dat$percent, dat$qq), mean, na.rm = T)
-# write.csv(dat, "data/exp1-preprocessed.csv", row.names = FALSE)
 ```
 
 ## Descriptive plot, based on observed responses 
@@ -225,32 +233,180 @@ abline(h = .50, lwd = 1.5, col = "darkgrey")
 legend(75, .7, legend = levels(dat$qq), fill = qcols, bg = "white", box.col = "white")
 ```
 
+```{r fig-quant-ind}
+# visualize the pattern for each person: fewer than half
+prop         <- tapply(dat$resp, list(dat$percent_cat, dat$workerid, dat$qq), mean, na.rm = T)
+successes    <- tapply(dat$resp, list(dat$percent_cat, dat$workerid, dat$qq), sum, na.rm = T)
+observations <- tapply(dat$resp, list(dat$percent_cat, dat$workerid, dat$qq), length)
+percentages  <- c(17, 33, 45, 55, 65, 87)
+
+quantifiers <- dimnames(prop)[[3]]
+qcols_ind <- sapply(qcols, function(x) transparentColor(x, perc = 50))
+
+for(i in seq_along(quantifiers)){
+  
+  matplot(percentages, prop[,,i]
+        , pch = 19, col = qcols_ind[i], type='l', lty = 1
+        , xlab = paste("Percent:", quantifiers[i]), ylab = "Proportion 'true' responses"
+        , frame.plot = F)
+abline(v = 50, lwd = 1.5, col = "darkgrey")
+abline(h = .50, lwd = 1.5, col = "darkgrey")
+  
+}
+```
+
+```{r exclude_quantifiers}
+dat    <- subset(dat, quant %in% c('Fewer than half', 'More than half'))
+dat$qq <- factor(dat$qq)
+write.csv(dat, "../data/exp1-preprocessed.csv", row.names = FALSE)
+#write.csv(dat, "../data/exp1-preprocessed-all.csv", row.names = FALSE)
+```
+
 #### Priors
 
 ```{r visualize-priors}
-x     <- seq(0, 5, .01)
-ysig  <- dlnorm(x, .1, .5)
-ysig2 <- 2 * x * dinvgamma(x^2, 2, .1)
-plot(x, ysig, type = "l")
-lines(x, ysig2, col = 2)
-ydelt <- rnorm(x, 0, .1)
+M <- 1e4
+# beta parameter: original model
+  sig2_beta <- rinvgamma(M, 2, .2)
+  delta     <- rnorm(M, 0, 5)
+  priorbeta <- rnorm(M, delta, sqrt(sig2_beta))
+  plot(density(priorbeta))
+  
+  x            <- seq(-2, 2, length.out=M)
+  density_beta <- dnorm(x, median(delta), sqrt(median(sig2_beta)))
+  plot(x, density_beta, type = 'l', las = 1)
 
-M <- 10000
-ysig2 <- rinvgamma(M, 2, .1)
-ydelt <- rnorm(M, 0, .1)
+# beta parameter: half student t
+  sig_beta  <- LaplacesDemon::rhalft(M, scale=0.3, nu=4)
+  delta     <- rnorm(M, 0, 5)
+  priorbeta <- rnorm(M, delta, sig_beta)
+  plot(density(priorbeta))
+  
+  x            <- seq(-2, 2, length.out=M)
+  density_beta <- dnorm(x, median(delta), median(sig_beta))
+  plot(x, density_beta, type = 'l', las = 1)
 
-prioreff <- rnorm(M, ydelt, sqrt(ysig2))
+# alpha parameter: original model
+  sig2_alpha <- rinvgamma(M, 2, .2)
+  nu         <- rnorm(M, 0, 5)
+  prioralpha <- rlnorm(M, nu, sqrt(sig2_alpha))
+  plot(density(prioralpha[prioralpha < 1]), main = 'original model', ylim = c(0,30))
+  
+  x             <- seq(0, 4, length.out=M)
+  density_alpha <- dlnorm(x, median(nu), sqrt(median(sig2_alpha)))
+  plot(x, density_alpha, type = 'l', las = 1)
 
-layout(matrix(1:4, ncol = 2, byrow = T))
-hist(prioreff)
-hist(ydelt)
-hist(pnorm(prioreff), xlim = c(0, 1))
-hist(pnorm(ydelt), xlim = c(0, 1))
+# alpha parameter: adjusted priors
+  sig2_alpha <- rinvgamma(M, 1, .5)
+  nu         <- rnorm(M, -4, 1)
+  prioralpha <- rlnorm(M, nu, sqrt(sig2_alpha))
+  plot(density(prioralpha[prioralpha < 1]), main = 'adjusted priors', ylim = c(0,30))
+  
+  x             <- seq(0, 0.1, length.out=M)
+  density_alpha <- dlnorm(x, median(nu), sqrt(median(sig2_alpha)))
+  plot(x, density_alpha, type = 'l', las = 1, xlim = c(0, 0.1))
+
+# alpha parameter: half student t
+  sig_alpha  <- LaplacesDemon::rhalft(M, scale=1, nu=4)
+  nu         <- rnorm(M, -4, 1)
+  prioralpha <- rlnorm(M, nu, sig_alpha)
+  plot(density(prioralpha[prioralpha < 1]), main = 'adjusted priors and variance', ylim = c(0,30))
+  
+  x             <- seq(0, 0.1, length.out=M)
+  density_alpha <- dlnorm(x, median(nu), median(sig_alpha))
+  plot(x, density_alpha, type = 'l', las = 1, xlim = c(0, 0.1))
+
+# layout(matrix(1:4, ncol = 2, byrow = T))
+# hist(ydelt)
+# hist(plnorm(prioralpha), xlim = c(0, 1))
+# hist(pnorm(ydelt), xlim = c(0, 1))
+
+### fully hierarchical
+# Beta(2, 20)
+samps <- rbeta(1e4, 2, 20)
+# concentration
+# kappa = alpha + beta
+# mode
+# omega = (alpha - 1) / (alpha + beta - 2) 
+# omega = 1/22 = 0.045
+# kappaMinusTwo = 20
+kappaMinusTwo <- rgamma(1e4, 20, 1)
+plot(density(kappaMinusTwo), xlim = c(0, 40))
+median(kappaMinusTwo)
+plot(density(kappaMinusTwo + 2), xlim = c(0, 40))
+
+omega <- rbeta(1e4, 2, 20)
+plot(density(omega))
+theta <- rbeta(1e4, omega*(kappaMinusTwo) + 1, (1 - omega)*(kappaMinusTwo)+1)
+plot(density(theta))
+median(theta)
 ```
 
-#### Model 1: original model (fewer than half/more than half)
+#### Validate initial model based on a subset of the data
 
-```{stan output.var= 'logmod', eval = TRUE}
+```{r run-models-inits}
+run_all    <- TRUE
+prior      <- TRUE
+modelname  <- 'mod_short_orig'
+niter      <- 1000
+nwarmup    <- 500
+nchains    <- 3
+addparams  <- NULL
+
+if(run_all){
+  
+  filename <- list.files('../models/')
+ 
+  if(prior) {
+    
+    include  <- grepl('_prior', filename)
+    filename <- filename[include]
+    
+  }
+  
+  prior    <- grepl('_prior', filename)
+  
+} else {
+  
+ filename <- ifelse(prior,  
+                    paste0(modelname, '_prior.stan'), 
+                    paste0(modelname, '.stan'))
+  
+}
+
+model_list <- list()
+
+for(i in 1:length(filename)){
+  
+  model_list[[i]] <- rstan::stan_model(file = paste0('../models/', filename[i]))
+  
+}
+```
+
+```{r run-models}
+
+for(i in 1:length(model_list)){
+  
+  predat    <- getDat(dat, prior = prior[i])
+  logmodfit <- myRunner(predat
+                      , prior = prior[i]
+                      , addparams = addparams
+                      , mod = model_list[[i]]
+                      , iter = niter
+                      , warmup = nwarmup
+                      , control = list(adapt_delta = .97, max_treedepth = 14)
+                      , nchains = nchains)
+  save(logmodfit, file = paste0('../output/', filename[i], '.rda'))
+  
+}
+
+```
+
+
+
+#### Models: original model (fewer than half/more than half)
+
+```{stan output.var= 'logmod', eval = FALSE}
 data {
   int<lower=1> D;                     // # Dimensions of the model: nr. of quantifiers
   int<lower=0> N;                     // # Observations: rows in dataset
@@ -439,18 +595,153 @@ generated quantities {
   for (n in 1:N)
   mu_pred[n] = fewer[n] * (cperc[n] - betaprior[sub[n], 1]) / alphaprior[sub[n], 1] + 
           more[n] * (cperc[n] - betaprior[sub[n], 2]) / alphaprior[sub[n], 2];
-            
   for (n in 1:N)
     p_pred[n] = fewer[n] * gammaprior[sub[n], 1] + 
     more[n] * gammaprior[sub[n], 2] + 
     (1 - 2 * (fewer[n] * gammaprior[sub[n], 1] + 
     more[n] * gammaprior[sub[n], 2])) *
-  inv_logit(mu_pred[n]);
-  y_pred[n] =  bernoulli_rng(p_pred[n]);
+    inv_logit(mu_pred[n]);
+   y_pred =  bernoulli_rng(p_pred);
 }
 ```
 
-```{r init, cache = TRUE}
+```{stan output.var= 'logmod_fhier', eval = FALSE}
+data {
+  int<lower=1> D;                     // # Dimensions of the model: nr. of quantifiers
+  int<lower=0> N;                     // # Observations: rows in dataset
+  int<lower=1> I;                     // # Participants
+  int<lower=0,upper=1> y[N];          // Data 0,1
+  vector[N] cperc;                    // Centered Percentages
+  int<lower=1,upper=I> sub[N];        // participant vector
+  int<lower=0,upper=1> fewer[N];      // Fewer than half
+  int<lower=0,upper=1> more[N];       // More than half
+}
+
+parameters {
+  real delta[D];                       // Means of betas
+  real<lower=0> sigma[D];              // standard deviation of betas
+  vector[D] beta[I];                   // vectors of betas
+  real nu[D];                          // Means of alphas
+  real<lower=0> sigmaalpha[D];         // standard deviation of alphas
+  vector<lower=0>[D] alpha[I];         // vectors of alphas
+  vector<lower=0,upper=1>[D] gamma[I]; // vector of gammas
+  real<lower=0, upper=1> mug[D];       // Mode of gammas
+  real<lower=0> eta[D];                // concentration of gammas (prior sample size a + b)
+}
+
+transformed parameters {
+  real<lower=0> a[D];
+  real<lower=0> b[D];
+  
+  for (d in 1:D)
+    a[d] = eta[d] * mug[d];
+  for (d in 1:D)
+    b[d] = eta[d] * (1 - mug[d]);
+}
+
+model {
+  vector[N] mu;
+  vector[N] p;
+  delta       ~ normal(0, 5);
+  sigma       ~ student_t(4, 0, 0.3);
+  nu          ~ normal(-4, 1);
+  sigmaalpha  ~ student_t(4, 0, 1);
+  mug         ~ beta(2, 20);
+  eta         ~ exponential(0.045);
+  
+  for (i in 1:I)
+    beta[i] ~ normal(delta, sigma);
+  for (i in 1:I)
+    alpha[i] ~ lognormal(nu, sigmaalpha);
+  for (i in 1:I)
+    gamma[i] ~ beta(a, b);
+  for (n in 1:N)
+    mu[n] = fewer[n] * (cperc[n] - beta[sub[n], 1]) / alpha[sub[n], 1] + 
+            more[n] * (cperc[n] - beta[sub[n], 2]) / alpha[sub[n], 2];
+  for (n in 1:N)
+    p[n] = fewer[n] * gamma[sub[n], 1] + 
+    more[n] * gamma[sub[n], 2] + 
+    (1 - 2 * (fewer[n] * gamma[sub[n], 1] + 
+    more[n] * gamma[sub[n], 2])) *
+  inv_logit(mu[n]);
+  // (1 - exp(-fmax(mu[n], .001))); // no noise term simple version (or maybe not, because no noise term)
+  y ~ bernoulli(p);
+  
+}
+```
+
+```{stan output.var= 'logmod_fhier_prior', eval = FALSE}
+data {
+  int<lower=1> D;                     // # Dimensions of the model: nr. of quantifiers
+  int<lower=0> N;                     // # Observations: rows in dataset
+  int<lower=1> I;                     // # Participants
+  vector[N] cperc;                    // Centered Percentages
+  int<lower=1,upper=I> sub[N];        // participant vector
+  int<lower=0,upper=1> fewer[N];      // Fewer than half
+  int<lower=0,upper=1> more[N];       // More than half
+}
+
+parameters {
+  // Prior predictives
+  real deltaprior[D];                       // Means of betas
+  real<lower=0> sigmaprior[D];              // standard deviation of betas
+  vector[D] betaprior[I];                   // vectors of betas
+  real nuprior[D];                          // Means of alphas
+  real<lower=0> sigmaalphaprior[D];         // standard deviation of alphas
+  vector<lower=0>[D] alphaprior[I];         // vectors of alphas
+  vector<lower=0,upper=1>[D] gammaprior[I]; // vector of gammas
+  real<lower=0, upper=1> mugprior[D];       // mode of hierarchical gamma
+  real<lower=0> etaprior[D];                // concentration of gamma
+}
+
+transformed parameters {
+  real<lower=0> aprior[D];
+  real<lower=0> bprior[D];
+
+  for (d in 1:D)
+    aprior[d] = etaprior[d] * mugprior[d];
+  for (d in 1:D)
+    bprior[d] = etaprior[d] * (1 - mugprior[d]);
+}
+
+model {
+  // Prior predictives
+  deltaprior         ~ normal(0, 5);
+  sigmaprior         ~ student_t(4, 0, 0.3);
+  nuprior            ~ normal(-4, 1);
+  sigmaalphaprior    ~ student_t(4, 0, 1);
+  mugprior           ~ beta(6, 14);
+  etaprior           ~ exponential(0.05);
+  
+  for (i in 1:I)
+    betaprior[i] ~ normal(deltaprior, sigmaprior);
+  for (i in 1:I)
+    alphaprior[i] ~ lognormal(nuprior, sigmaalphaprior);
+  for (i in 1:I)
+    gammaprior[i] ~ beta(aprior, bprior);
+}
+
+generated quantities {
+  vector[N] mu_pred;
+  vector[N] p_pred;
+  int y_pred[N];
+  
+  // Prior Predictive
+  for (n in 1:N)
+  mu_pred[n] = fewer[n] * (cperc[n] - betaprior[sub[n], 1]) / alphaprior[sub[n], 1] + 
+          more[n] * (cperc[n] - betaprior[sub[n], 2]) / alphaprior[sub[n], 2];
+  for (n in 1:N)
+    p_pred[n] = fewer[n] * gammaprior[sub[n], 1] + 
+    more[n] * gammaprior[sub[n], 2] + 
+    (1 - 2 * (fewer[n] * gammaprior[sub[n], 1] + 
+    more[n] * gammaprior[sub[n], 2])) *
+    inv_logit(mu_pred[n]);
+   y_pred =  bernoulli_rng(p_pred);
+}
+
+```
+
+```{r init, eval = FALSE}
 getDat <- function(dat){
   # dat <- subset(dat, qq %in% 4:6)
   D <- length(levels(dat$qq))
@@ -472,7 +763,6 @@ getDat <- function(dat){
   
   # res <- glm(y ~ cperc + few + fewer + many + more + most, family = binomial(link = "probit"), 
   #   data = dat)
-  
   standat <- list(D = D, N = N, I = I, 
                   y = y, 
                   cperc = cperc, sub = sub,
@@ -505,36 +795,378 @@ myRunner <- function(standat, iter = 1000, warmup = 400, mod, nchains = 4, ...){
                   chains = nchains,
                   cores  = nchains,
                   # init = lapply(1:4, inits),
-                  pars   = c("delta", "nu", "beta", "alpha", "gamma", "sigma2", "sigma2alpha", 
-                             "deltaprior", "nuprior", "betaprior", "alphaprior", "gammaprior", 
-                             "sigma2prior", "sigma2alphaprior", "y_pred", "mu_pred", "p_pred")
+                  pars   = c("delta", "nu", "beta", "alpha", "gamma", 
+                             "sigma", "sigmaalpha", "eta", "mug")
                   , ...)
   return(fit)}
 
 predat <- getDat(dat)
+
+getDat_prior <- function(dat){
+  # dat <- subset(dat, qq %in% 4:6)
+  D <- length(levels(dat$qq))
+  N <- nrow(dat)
+  I <- length(unique(dat$workerid))
+  cperc <- (dat$percent - 50) / 100
+  sub   <- as.numeric(factor(dat$workerid))
+  # identify which trial concerns which quantifier
+  # 1="All", 2="Few", 3="Fewer than half", 4="Many", 
+  # 5="More than half", 6="Most", 7="None"; 8="Some"
+  fewer <- ifelse(dat$qq == 'Fewer than half', 1, 0)
+  more  <- ifelse(dat$qq == 'More than half', 1, 0)
+  # many  <- ifelse(dat$qq == 'Many', 1, 0)
+  # few   <- ifelse(dat$qq == 'Few', 1, 0)
+  # most  <- ifelse(dat$qq == 'Most', 1, 0)
+  # above <- as.numeric(cperc > 0)
+  
+  # res <- glm(y ~ cperc + few + fewer + many + more + most, family = binomial(link = "probit"), 
+  #   data = dat)
+  standat <- list(D = D, N = N, I = I, 
+                  cperc = cperc, sub = sub,
+                  #few = few, many = many, most = most, above = above,
+                  fewer = fewer, more = more
+                  )  
+  return(standat)
+}
+
+myRunner_prior <- function(standat, iter = 1000, warmup = 400, mod, nchains = 4, ...){
+  fit <- sampling(mod, verbose=T,
+                  data   = standat, 
+                  iter   = iter,
+                  warmup = warmup,
+                  chains = nchains,
+                  cores  = nchains,
+                  # init = lapply(1:4, inits),
+                  pars   = c("deltaprior", "nuprior", "betaprior", "alphaprior", "gammaprior", 
+                             "sigmaprior", "sigmaalphaprior", "eta", "mug",
+                             "y_pred", "mu_pred", "p_pred")
+                  , ...)
+  return(fit)}
+
+predat_prior <- getDat_prior(dat)
 ```
 
-```{r run-logmod, cache = TRUE, eval = FALSE, results = "hide"}
+```{r run-logmod-try, eval = FALSE, results = "hide"}
 rerun <- T
 logmodfit <- myRunner(predat
-                      , iter = 3500
-                      , warmup = 750
+                      , iter = 4000
+                      , warmup = 1000
+                      , mod = logmod_try
+                      , control = list(adapt_delta = .97, max_treedepth = 14)
+                      , nchains = 3)
+save(logmodfit, file = "../output/out_prior_predictions_try.rda")
+```
+
+```{r run-logmod, eval = FALSE, results = "hide"}
+rerun <- T
+logmodfit <- myRunner(predat
+                      , iter = 4000
+                      , warmup = 1000
                       , mod = logmod
                       , control = list(adapt_delta = .97, max_treedepth = 14)
-                      , nchains = 2)
-#save(logmodfit, file = "outstudy1e.rda")
-save(logmodfit, file = "out_prior_predictions.rda")
+                      , nchains = 3)
+save(logmodfit, file = "../output/out_prior_predictions.rda")
 ```
 
-```{r run-logmod-adjusted, cache = TRUE, eval = TRUE, results = "hide"}
+```{r run-logmod-adjusted, eval = FALSE, results = "hide"}
 rerun <- T
 logmodfit <- myRunner(predat
-                      , iter = 3500
-                      , warmup = 750
+                      , iter = 4000
+                      , warmup = 1000
                       , mod = logmod_adjusted
                       , control = list(adapt_delta = .97, max_treedepth = 14)
-                      , nchains = 2)
-save(logmodfit, file = "out_prior_predictions_adjusted.rda")
+                      , nchains = 3)
+save(logmodfit, file = "../output/out_prior_predictions_adjusted.rda")
+```
+
+```{r run-logmod-fhier, eval = FALSE, results = "hide"}
+rerun <- T
+logmodfit <- myRunner(predat
+                      , iter = 4000
+                      , warmup = 500
+                      , mod = logmod_fhier
+                      , control = list(adapt_delta = .97, max_treedepth = 14)
+                      , nchains = 3)
+save(logmodfit, file = "../output/out_prior_predictions_fhier.rda")
+```
+
+```{r run-logmod-fhier_prior, eval = FALSE, results = "hide"}
+rerun <- T
+logmodfit <- myRunner_prior(predat_prior
+                      , iter = 4000
+                      , warmup = 500
+                      , mod = logmod_fhier_prior
+                      , control = list(adapt_delta = .97, max_treedepth = 14)
+                      , nchains = 3)
+save(logmodfit, file = "../output/out_prior_predictions_fhier_priors.rda")
+```
+
+#### Models: Ex-Gaussian distribution (fewer than half/more than half)
+
+```{stan output.var= 'exgauss', eval = FALSE}
+data {
+  int<lower=1> D;                     // # Dimensions of the model: nr. of quantifiers
+  int<lower=0> N;                     // # Observations: rows in dataset
+  int<lower=1> I;                     // # Participants
+  int<lower=0,upper=1> y[N];          // Data 0,1
+  vector[N] cperc;                    // Centered Percentages
+  int<lower=1,upper=I> sub[N];        // participant vector
+  int<lower=0,upper=1> fewer[N];      // Fewer than half
+  int<lower=0,upper=1> more[N];       // More than half
+}
+
+parameters {
+  real delta[D];                       // Means of betas
+  real<lower=0> sigma[D];              // standard deviation of betas
+  vector[D] beta[I];                   // vectors of betas
+  real nu[D];                          // Means of alphas
+  real<lower=0> sigmaalpha[D];         // standard deviation of alphas
+  vector<lower=0>[D] alpha[I];         // vectors of alphas
+  vector<lower=0,upper=1>[D] gamma[I]; // vector of gammas
+  real<lower=0, upper=1> mug[D];       // Mode of gammas
+  real<lower=0> eta[D];                // concentration of gammas (prior sample size a + b)
+}
+
+transformed parameters {
+  real<lower=0> a[D];
+  real<lower=0> b[D];
+  
+  for (d in 1:D)
+    a[d] = eta[d] * mug[d];
+  for (d in 1:D)
+    b[d] = eta[d] * (1 - mug[d]);
+}
+
+model {
+  vector[N] mu;
+  vector[N] p;
+  delta       ~ normal(0, 5);
+  sigma       ~ student_t(4, 0, 0.3);
+  nu          ~ normal(-4, 1);
+  sigmaalpha  ~ student_t(4, 0, 1);
+  mug         ~ beta(2, 20);
+  eta         ~ exponential(0.045);
+  
+  for (i in 1:I)
+    beta[i] ~ normal(delta, sigma);
+  for (i in 1:I)
+    alpha[i] ~ lognormal(nu, sigmaalpha);
+  for (i in 1:I)
+    gamma[i] ~ beta(a, b);
+  for (n in 1:N)
+    mu[n] = fewer[n] * (cperc[n] - beta[sub[n], 1]) / alpha[sub[n], 1] + 
+            more[n] * (cperc[n] - beta[sub[n], 2]) / alpha[sub[n], 2];
+  for (n in 1:N)
+    p[n] = fewer[n] * gamma[sub[n], 1] + 
+    more[n] * gamma[sub[n], 2] + 
+    (1 - 2 * (fewer[n] * gamma[sub[n], 1] + 
+    more[n] * gamma[sub[n], 2])) *
+    // inv_logit(mu[n]);
+    (1 - exp(-fmax(mu[n], .001))); 
+  y ~ bernoulli(p);
+  
+}
+```
+
+```{stan output.var= 'exgauss_prior', eval = TRUE}
+data {
+  int<lower=1> D;                     // # Dimensions of the model: nr. of quantifiers
+  int<lower=0> N;                     // # Observations: rows in dataset
+  int<lower=1> I;                     // # Participants
+  vector[N] cperc;                    // Centered Percentages
+  int<lower=1,upper=I> sub[N];        // participant vector
+  int<lower=0,upper=1> fewer[N];      // Fewer than half
+  int<lower=0,upper=1> more[N];       // More than half
+}
+
+parameters {
+  // Prior predictives
+  real deltaprior[D];                       // Means of betas
+  real<lower=0> sigmaprior[D];              // standard deviation of betas
+  vector[D] betaprior[I];                   // vectors of betas
+  real nuprior[D];                          // Means of alphas
+  real<lower=0> sigmaalphaprior[D];         // standard deviation of alphas
+  vector<lower=0>[D] alphaprior[I];         // vectors of alphas
+  vector<lower=0,upper=1>[D] gammaprior[I]; // vector of gammas
+  real<lower=0, upper=1> mugprior[D];       // mode of hierarchical gamma
+  real<lower=0> etaprior[D];                // concentration of gamma
+}
+
+transformed parameters {
+  real<lower=0> aprior[D];
+  real<lower=0> bprior[D];
+
+  for (d in 1:D)
+    aprior[d] = etaprior[d] * mugprior[d];
+  for (d in 1:D)
+    bprior[d] = etaprior[d] * (1 - mugprior[d]);
+}
+
+model {
+  // Prior predictives
+  deltaprior         ~ normal(0, 5);
+  sigmaprior         ~ student_t(4, 0, 0.3);
+  nuprior            ~ normal(-4, 1);
+  sigmaalphaprior    ~ student_t(4, 0, 1);
+  mugprior           ~ beta(6, 14);
+  etaprior           ~ exponential(0.05);
+  
+  for (i in 1:I)
+    betaprior[i] ~ normal(deltaprior, sigmaprior);
+  for (i in 1:I)
+    alphaprior[i] ~ lognormal(nuprior, sigmaalphaprior);
+  for (i in 1:I)
+    gammaprior[i] ~ beta(aprior, bprior);
+}
+
+generated quantities {
+  vector[N] mu_pred;
+  vector[N] p_pred;
+  int y_pred[N];
+  
+  // Prior Predictive
+  for (n in 1:N)
+  mu_pred[n] = fewer[n] * (cperc[n] - betaprior[sub[n], 1]) / alphaprior[sub[n], 1] + 
+          more[n] * (cperc[n] - betaprior[sub[n], 2]) / alphaprior[sub[n], 2];
+  for (n in 1:N)
+    p_pred[n] = fewer[n] * gammaprior[sub[n], 1] + 
+    more[n] * gammaprior[sub[n], 2] + 
+    (1 - 2 * (fewer[n] * gammaprior[sub[n], 1] + 
+    more[n] * gammaprior[sub[n], 2])) *
+    (1 - exp(-fmax(mu_pred[n], .001))); 
+   y_pred =  bernoulli_rng(p_pred);
+   
+}
+
+```
+
+
+```{r init}
+getDat <- function(dat){
+  # dat <- subset(dat, qq %in% 4:6)
+  D <- length(levels(dat$qq))
+  N <- nrow(dat)
+  I <- length(unique(dat$workerid))
+  
+  y <- dat$resp
+  cperc <- (dat$percent - 50) / 100
+  sub <- as.numeric(factor(dat$workerid))
+  # identify which trial concerns which quantifier
+  # 1="All", 2="Few", 3="Fewer than half", 4="Many", 
+  # 5="More than half", 6="Most", 7="None"; 8="Some"
+  fewer <- ifelse(dat$qq == 'Fewer than half', 1, 0)
+  more  <- ifelse(dat$qq == 'More than half', 1, 0)
+  # many  <- ifelse(dat$qq == 'Many', 1, 0)
+  # few   <- ifelse(dat$qq == 'Few', 1, 0)
+  # most  <- ifelse(dat$qq == 'Most', 1, 0)
+  # above <- as.numeric(cperc > 0)
+  
+  # res <- glm(y ~ cperc + few + fewer + many + more + most, family = binomial(link = "probit"), 
+  #   data = dat)
+  standat <- list(D = D, N = N, I = I, 
+                  y = y, 
+                  cperc = cperc, sub = sub,
+                  #few = few, many = many, most = most, above = above,
+                  fewer = fewer, more = more
+                  )  
+  return(standat)
+}
+
+myRunner <- function(standat, iter = 1000, warmup = 400, mod, nchains = 4, ...){
+  inits <- function(...){
+    list(  delta       = runif(standat$D, -.5, .5)
+         , sigma2      = runif(standat$D, 1, 1.5)
+         , beta        = matrix(runif(standat$I * standat$D, -1, 1), nrow = standat$I, ncol = standat$D)
+         , nu          = runif(standat$D, .1, 1)
+         , sigma2alpha = runif(standat$D, 1, 1.5)
+         , alpha       = matrix(runif(standat$I * standat$D, .1, 1), nrow = standat$I, ncol = standat$D)
+         , deltaprior       = runif(standat$D, -.5, .5)
+         , sigma2prior      = runif(standat$D, 1, 1.5)
+         , betaprior        = matrix(runif(standat$I * standat$D, -1, 1), nrow = standat$I, ncol = standat$D)
+         , nuprior          = runif(standat$D, .1, 1)
+         , sigma2alphaprior = runif(standat$D, 1, 1.5)
+         , alphaprior       = matrix(runif(standat$I * standat$D, .1, 1), nrow = standat$I, ncol = standat$D))
+  }
+  # inits <- list(c1 = inits)
+  fit <- sampling(mod, verbose=T,
+                  data   = standat, 
+                  iter   = iter,
+                  warmup = warmup,
+                  chains = nchains,
+                  cores  = nchains,
+                  # init = lapply(1:4, inits),
+                  pars   = c("delta", "nu", "beta", "alpha", "gamma", 
+                             "sigma", "sigmaalpha", "eta", "mug")
+                  , ...)
+  return(fit)}
+
+predat <- getDat(dat)
+
+getDat_prior <- function(dat){
+  # dat <- subset(dat, qq %in% 4:6)
+  D <- length(levels(dat$qq))
+  N <- nrow(dat)
+  I <- length(unique(dat$workerid))
+  cperc <- (dat$percent - 50) / 100
+  sub   <- as.numeric(factor(dat$workerid))
+  # identify which trial concerns which quantifier
+  # 1="All", 2="Few", 3="Fewer than half", 4="Many", 
+  # 5="More than half", 6="Most", 7="None"; 8="Some"
+  fewer <- ifelse(dat$qq == 'Fewer than half', 1, 0)
+  more  <- ifelse(dat$qq == 'More than half', 1, 0)
+  # many  <- ifelse(dat$qq == 'Many', 1, 0)
+  # few   <- ifelse(dat$qq == 'Few', 1, 0)
+  # most  <- ifelse(dat$qq == 'Most', 1, 0)
+  # above <- as.numeric(cperc > 0)
+  
+  # res <- glm(y ~ cperc + few + fewer + many + more + most, family = binomial(link = "probit"), 
+  #   data = dat)
+  standat <- list(D = D, N = N, I = I, 
+                  cperc = cperc, sub = sub,
+                  #few = few, many = many, most = most, above = above,
+                  fewer = fewer, more = more
+                  )  
+  return(standat)
+}
+
+myRunner_prior <- function(standat, iter = 1000, warmup = 400, mod, nchains = 4, ...){
+  fit <- sampling(mod, verbose=T,
+                  data   = standat, 
+                  iter   = iter,
+                  warmup = warmup,
+                  chains = nchains,
+                  cores  = nchains,
+                  # init = lapply(1:4, inits),
+                  pars   = c("deltaprior", "nuprior", "betaprior", "alphaprior", "gammaprior", 
+                             "sigmaprior", "sigmaalphaprior", "etaprior", "mugprior",
+                             "y_pred", "mu_pred", "p_pred")
+                  , ...)
+  return(fit)}
+
+predat_prior <- getDat_prior(dat)
+# save(predat_prior, file = "../list_prior.rda")
+```
+
+```{r run-exgauss, eval = FALSE, results = "hide"}
+rerun <- T
+logmodfit <- myRunner(predat
+                      , iter = 4000
+                      , warmup = 500
+                      , mod = exgauss
+                      , control = list(adapt_delta = .97, max_treedepth = 14)
+                      , nchains = 3)
+save(logmodfit, file = "../output/out_prior_predictions_exgauss.rda")
+```
+
+```{r run-exgauss-prior, eval = TRUE, results = "hide"}
+rerun <- T
+logmodfit <- myRunner_prior(predat_prior
+                      , iter = 4000
+                      , warmup = 500
+                      , mod = exgauss_prior
+                      , control = list(adapt_delta = .97, max_treedepth = 14)
+                      , nchains = 3)
+save(logmodfit, file = "../output/out_prior_predictions_exgauss_priors.rda")
 ```
 
 
@@ -619,7 +1251,7 @@ model {
 
 ```{r, cache = TRUE}
 #load("outstudy1e.rda")
-load("out_prior_predictions.rda")
+load("../output/out_prior_predictions.rda")
 ```
 
 - Here is an initial check how well the chains mixed. This is a bit of a problem for the model. I may have to reparameterize to set one quantifier (more than half?) as default.
@@ -650,10 +1282,10 @@ print(names(list_of_draws))
 dim(list_of_draws$mu_pred)
 dim(list_of_draws$alpha)
 
+N <- length(unique(dat$workerid))
 for(i in 1:N){
   round(quantile(list_of_draws$alpha[,i , ], c(0.025, 0.5, 0.975)), 4)
 }
-
 ```
 
 ```{r inspect_data_for_each_person}
