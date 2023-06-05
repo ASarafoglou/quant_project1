@@ -34,7 +34,6 @@ niter      <- 5000
 nwarmup    <- 1000
 nchains    <- 2
 addparams  <- NULL
-
 ```
 
 # Model development
@@ -47,7 +46,7 @@ Run all stan models.
 ```{r set-inits-devel, eval = TRUE}
 run_all    <- FALSE
 prior      <- TRUE
-modelname  <- 'mod_partial_exgauss'
+modelname  <- 'mod_partial_exp_try'
 
 if(run_all){
   
@@ -84,12 +83,17 @@ for(i in 1:length(filename)){
 # Generated Quantities in R 
 
 ```{r run-model-in-R, eval = FALSE}
-dat_t1    <- read.csv('../data/exp1-preprocessed-all.csv', header = TRUE)
+# To-Do: predict data more fine-grained: function which evaluates quantifiers at 
+# proportion
+# 1 completely random simulated dataset
+# 1 with fixed group-level values (based on median) and random individual effects
+#dat_t1    <- read.csv('../data/exp1-preprocessed-all.csv', header = TRUE)
+dat_t1    <- read.csv('../data/simulated-all-large-data-1.csv', header = TRUE)
 dat_t2    <- dat_t1
 dat_t1$qq <- as.factor(dat_t1$qq)
 dat_t2$qq <- as.factor(dat_t2$qq)
 
-nsims  <- 3
+nsims  <- 1
 t      <- 2 
 predat <- getDat(dat_t1, dat_t2, prior = prior)
 predat$D <- 5
@@ -104,122 +108,97 @@ mu_pred_t2 <- matrix(NA, nrow = predat$N_t2, ncol = nsims)
 p_pred_t2  <- matrix(NA, nrow = predat$N_t2, ncol = nsims)
 y_pred_t2  <- matrix(NA, nrow = predat$N_t2, ncol = nsims)
 
-s_narrow <- 0.1
-s_ultra  <- 0.05
-s_wide   <- 1
-  
 for(s in 1:nsims){
-  # thresholds:
-  # overall
-  muprior_b   <- my_rnorm(predat$D, mu=0, sigma=0.1, lower = -0.5, upper = 0.5)
-  sdprior_b   <- abs(stats::rt(predat$D, 4, 0.01))
-  # variability: 2 narrow, 3 wide
-  sdb_narrow_prior <- abs(stats::rt(2, 4, 0.01))
-  sdb_wide_prior   <- abs(stats::rt(3, 4, 1))
-  sda_prior <- rexp(2, 10)
   
-  # correlation between two timepoints (we found moderate correlations)
-  # I assume we want to estimate for beta and gamma and each quantifier the correlation separately
-  rho_a_raw <- NULL
-  rho_b_raw <- NULL
-  rho_g_raw <- NULL
+  # group-level means:
+  muprior_b_more  <- my_rnorm(2, mu = 0   , sigma = 0.2, lower = -0.5, upper = 0.5) # favors values = 50%
+  muprior_b_fewer <- my_rnorm(2, mu = 0   , sigma = 0.2, lower = -0.5, upper = 0.5) # favors values = 50%
+  muprior_b_most  <- my_rnorm(2, mu = 0.3 , sigma = 0.2, lower = -0.5, upper = 0.5) # favors values > 50%
+  muprior_b_many  <- my_rnorm(2, mu = 0.3 , sigma = 0.2, lower = -0.5, upper = 0.5) # favors values > 50%
+  muprior_b_few   <- my_rnorm(2, mu = -0.3, sigma = 0.2, lower = -0.5, upper = 0.5) # favors values < 50%
+  
+  muprior_a <- matrix(0, nrow = predat$D, ncol = t)
+  muprior_g <- matrix(0, nrow = predat$D, ncol = t)     
   for(d in 1:predat$D){
     
-    rho_a_raw[d] <- rbeta(1, 8, 8)  # favor values around 0
-    rho_b_raw[d] <- rbeta(1, 10, 6) # favor values between 0 and 0.5
-    rho_g_raw[d] <- rbeta(1, 10, 6) # favor values between 0 and 0.5
+    muprior_a[d,] <- my_rnorm(2, mu = -4, sigma = 1, lower = -6, upper = 0)
+    muprior_g[d,] <- my_rnorm(2, mu  = 0, sigma = 0.2, lower = 0, upper = 0.5)
     
   }
-  
-  # generated quantities
+   
+  # group-level standard deviation:
+    sdprior_a <- 1/rgamma(predat$D, 2, 1) # more variability since log-transformed
+    sdprior_b <- 1/rgamma(predat$D, 5, 1)
+    sdprior_g <- 1/rgamma(predat$D, 5, 1)
+    
+  # group-level correlation:
+    # between two timepoints (we found moderate correlations)
+    # I assume we want to estimate for beta and gamma and each quantifier the correlation separately
+    rho_a_raw <- NULL
+    rho_b_raw <- NULL
+    rho_g_raw <- NULL
+    for(d in 1:predat$D){
+      
+      rho_a_raw[d] <- rbeta(1, 4, 4) # favor values around 0
+      rho_b_raw[d] <- rbeta(1, 5, 3) # favor values between 0 and 0.5
+      rho_g_raw[d] <- rbeta(1, 5, 3) # favor values between 0 and 0.5
+      
+    }
+    
+  # generated quantities:
   rho_a <- (rho_a_raw * 2) - 1 # vagueness: not enough variability to detect correlations
   rho_b <- (rho_b_raw * 2) - 1
   rho_g <- (rho_g_raw * 2) - 1
   
-  # expectation: multivariate normals
-  mub_more_prior  <- my_mvrnorm(Mu=rep(0, t), Sigma=makeS(rho_b_raw[1], s_narrow), lower = 0, upper = 0.5)  # more than half: narrow
-  mub_fewer_prior <- my_mvrnorm(Mu=rep(0, t), Sigma=makeS(rho_b_raw[2], s_narrow), lower = -0.5, upper = 0) # fewer than half: narrow
-  mub_most_prior  <- my_mvrnorm(Mu=rep(0, t), Sigma=makeS(rho_b_raw[3], s_wide), lower = 0   , upper = 0.5) # most: wide
-  mub_many_prior  <- my_mvrnorm(Mu=rep(0, t), Sigma=makeS(rho_b_raw[4], s_wide), lower = -0.5, upper = 0.5) # many: wide
-  mub_few_prior   <- my_mvrnorm(Mu=rep(0, t), Sigma=makeS(rho_b_raw[5], s_wide), lower = -0.5, upper = 0)   # few: wide
-
-  # hyperpriors vagueness: multivariate normals
-  mua_prior <- matrix(0, nrow = predat$D, ncol = t)
-  for(d in 1:predat$D){
-      
-      mua_prior[d,] <- rnorm(1, mean=-4, sd=0.1)
-      
-  }
-  # hyperpriors response errors: multivariate normals
-  mu_g_prior <- matrix(0, nrow = predat$D, ncol = t)
-  for(d in 1:predat$D){
-      
-      mu_g_prior[d,] <- my_mvrnorm(Mu=rep(0.1, t), Sigma=makeS(rho_g[d], s_narrow), lower = 0, upper = 0.5)
-      
-  }
+  # threshold: timepoint 1 and 2
+  beta_t1_more_prior  <- my_rmvnorm(nsamp=predat$I, Mu=muprior_b_more , Sigma=makeS(rho_b_raw[1], sdprior_b), lower = -0.5, upper = 0.5)[,1]
+  beta_t1_fewer_prior <- my_rmvnorm(nsamp=predat$I, Mu=muprior_b_fewer, Sigma=makeS(rho_b_raw[2], sdprior_b), lower = -0.5, upper = 0.5)[,1]  
+  beta_t1_most_prior  <- my_rmvnorm(nsamp=predat$I, Mu=muprior_b_most , Sigma=makeS(rho_b_raw[3], sdprior_b), lower = -0.5, upper = 0.5)[,1]  
+  beta_t1_many_prior  <- my_rmvnorm(nsamp=predat$I, Mu=muprior_b_many , Sigma=makeS(rho_b_raw[4], sdprior_b), lower = -0.5, upper = 0.5)[,1]  
+  beta_t1_few_prior   <- my_rmvnorm(nsamp=predat$I, Mu=muprior_b_few  , Sigma=makeS(rho_b_raw[5], sdprior_b), lower = -0.5, upper = 0.5)[,1]  
+  beta_t2_more_prior  <- my_rmvnorm(nsamp=predat$I, Mu=muprior_b_more , Sigma=makeS(rho_b_raw[1], sdprior_b), lower = -0.5, upper = 0.5)[,2]
+  beta_t2_fewer_prior <- my_rmvnorm(nsamp=predat$I, Mu=muprior_b_fewer, Sigma=makeS(rho_b_raw[2], sdprior_b), lower = -0.5, upper = 0.5)[,2]  
+  beta_t2_most_prior  <- my_rmvnorm(nsamp=predat$I, Mu=muprior_b_most , Sigma=makeS(rho_b_raw[3], sdprior_b), lower = -0.5, upper = 0.5)[,2]  
+  beta_t2_many_prior  <- my_rmvnorm(nsamp=predat$I, Mu=muprior_b_many , Sigma=makeS(rho_b_raw[4], sdprior_b), lower = -0.5, upper = 0.5)[,2]  
+  beta_t2_few_prior   <- my_rmvnorm(nsamp=predat$I, Mu=muprior_b_few  , Sigma=makeS(rho_b_raw[5], sdprior_b), lower = -0.5, upper = 0.5)[,2]
   
-  alpha_t1_raw_prior <- matrix(0, nrow = predat$I, ncol = predat$D) 
+  # vagueness and response noise: timepoint 1 and 2
+  alpha_t1_raw_prior <- matrix(0, nrow = predat$I, ncol = predat$D)
   alpha_t2_raw_prior <- matrix(0, nrow = predat$I, ncol = predat$D)
-  
-  for(i in 1:predat$I){
-    for(d in 1:predat$D){
-      
-      alpha_raw_prior          <- rmvnorm(1e4, mua_prior[d,], makeS(rho_a[d], s_narrow))
-      alpha_t1_raw_prior[i, d] <- alpha_raw_prior[1]
-      alpha_t2_raw_prior[i, d] <- alpha_raw_prior[2]
-      
-    }
-  }
-  
-  # split by timepoints
-  beta_more_t1_prior  <- NULL
-  beta_fewer_t1_prior <- NULL
-  beta_most_t1_prior  <- NULL
-  beta_many_t1_prior  <- NULL
-  beta_few_t1_prior   <- NULL
-  beta_more_t2_prior  <- NULL
-  beta_fewer_t2_prior <- NULL
-  beta_most_t2_prior  <- NULL
-  beta_many_t2_prior  <- NULL
-  beta_few_t2_prior   <- NULL
-  alpha_t1_prior      <- matrix(0.001, nrow = predat$I, ncol = predat$D)
-  alpha_t2_prior      <- matrix(0.001, nrow = predat$I, ncol = predat$D)
-  gamma_t1_prior      <- matrix(0.2, nrow = predat$I, ncol = predat$D)
-  gamma_t2_prior      <- matrix(0.2, nrow = predat$I, ncol = predat$D)
-  
-  # transform parameters
-  for(i in 1:predat$I){
-    for(d in 1:predat$D){
-      
-      # # thresholds: timepoint 1 and 2
-      beta_more_t1_prior[i]  <- my_rnorm(1, mub_more_prior[1] , 0.1, lower = 0.  , upper = 0.5)
-      beta_fewer_t1_prior[i] <- my_rnorm(1, mub_fewer_prior[1], 0.1, lower = -0.5, upper = 0)
-      beta_most_t1_prior[i]  <- my_rnorm(1, mub_most_prior[1] , 0.5, lower = 0   , upper = 0.5)
-      beta_many_t1_prior[i]  <- my_rnorm(1, mub_many_prior[1] , 0.5, lower = -0.5, upper = 0.5)
-      beta_few_t1_prior[i]   <- my_rnorm(1, mub_few_prior[1]  , 0.5, lower = -0.5, upper = 0)
-      beta_more_t2_prior[i]  <- my_rnorm(1, mub_more_prior[2] , 0.1, lower = 0.  , upper = 0.5)
-      beta_fewer_t2_prior[i] <- my_rnorm(1, mub_fewer_prior[2], 0.1, lower = -0.5, upper = 0)
-      beta_most_t2_prior[i]  <- my_rnorm(1, mub_most_prior[2] , 0.5, lower = 0   , upper = 0.5)
-      beta_many_t2_prior[i]  <- my_rnorm(1, mub_many_prior[2] , 0.5, lower = -0.5, upper = 0.5)
-      beta_few_t2_prior[i]   <- my_rnorm(1, mub_few_prior[2]  , 0.5, lower = -0.5, upper = 0)
-      # vagueness: timepoint 1 and 2
-      alpha_t1_prior[i, d]    <- exp(alpha_t1_raw_prior[i, d])
-      alpha_t2_prior[i, d]    <- exp(alpha_t2_raw_prior[i, d])
-      # # response error: timepoint 1 and 2
-      gamma_t1_prior[i, d]    <- my_rnorm(1, mu_g_prior[d, 1], 0.1, lower = 0, upper = 0.5)
-      gamma_t2_prior[i, d]    <- my_rnorm(1, mu_g_prior[d, 2], 0.1, lower = 0, upper = 0.5)
-      
-    }
+  alpha_t1_prior     <- matrix(0, nrow = predat$I, ncol = predat$D)
+  alpha_t2_prior     <- matrix(0, nrow = predat$I, ncol = predat$D)
+  gamma_t1_prior     <- matrix(0, nrow = predat$I, ncol = predat$D)
+  gamma_t2_prior     <- matrix(0, nrow = predat$I, ncol = predat$D)
+  for(d in 1:predat$D){
+    
+    # vagueness: timepoint 1 and 2
+    alpha_t1_raw_prior[, d] <- rmvnorm(predat$I, muprior_a[d, ], makeS(rho_a[d], sdprior_a[d]))[,1]
+    alpha_t2_raw_prior[, d] <- rmvnorm(predat$I, muprior_a[d, ], makeS(rho_a[d], sdprior_a[d]))[,2]
+    alpha_t1_prior[, d]     <- exp(alpha_t1_raw_prior[, d])
+    alpha_t2_prior[, d]     <- exp(alpha_t2_raw_prior[, d])
+    
+    # response error: timepoint 1 and 2
+    gamma_t1_prior[, d] <- my_rmvnorm(nsamp = predat$I,
+                                      Mu    = muprior_g[d, ],
+                                      Sigma = makeS(rho_g[d], sdprior_g[d]),
+                                      lower = 0,
+                                      upper = 0.5)[,1]
+    gamma_t2_prior[, d] <- my_rmvnorm(nsamp = predat$I,
+                                      Mu    = muprior_g[d, ],
+                                      Sigma = makeS(rho_g[d], sdprior_g[d]),
+                                      lower = 0,
+                                      upper = 0.5)[,2]
+    
   }
   
   # timepoint 1
   for (n in 1:predat$N_t1) {
     
-    mu_pred_t1[n, s] <- predat$more_t1[n] * (predat$cperc_t1[n] - beta_more_t1_prior[sub_t1[n]]) / alpha_t1_prior[sub_t1[n], 1] +
-      predat$fewer_t1[n]  * (predat$cperc_t1[n] - beta_fewer_t1_prior[sub_t1[n]]) / alpha_t1_prior[sub_t1[n], 2] +
-      predat$most_t1[n]  * (predat$cperc_t1[n] - beta_most_t1_prior[sub_t1[n]]) / alpha_t1_prior[sub_t1[n], 3] +
-      predat$many_t1[n]  * (predat$cperc_t1[n] - beta_many_t1_prior[sub_t1[n]]) / alpha_t1_prior[sub_t1[n], 4] +
-      predat$few_t1[n]  * (predat$cperc_t1[n] - beta_few_t1_prior[sub_t1[n]]) / alpha_t1_prior[sub_t1[n], 5] 
+    mu_pred_t1[n, s] <- predat$more_t1[n] * (predat$cperc_t1[n] - beta_t1_more_prior[sub_t1[n]]) / alpha_t1_prior[sub_t1[n], 1] +
+      predat$fewer_t1[n]  * (predat$cperc_t1[n] - beta_t1_fewer_prior[sub_t1[n]]) / alpha_t1_prior[sub_t1[n], 2] +
+      predat$most_t1[n]  * (predat$cperc_t1[n] - beta_t1_most_prior[sub_t1[n]]) / alpha_t1_prior[sub_t1[n], 3] +
+      predat$many_t1[n]  * (predat$cperc_t1[n] - beta_t1_many_prior[sub_t1[n]]) / alpha_t1_prior[sub_t1[n], 4] +
+      predat$few_t1[n]  * (predat$cperc_t1[n] - beta_t1_few_prior[sub_t1[n]]) / alpha_t1_prior[sub_t1[n], 5] 
     
     p_pred_t1[n, s] <- predat$more_t1[n] * gamma_t1_prior[sub_t1[n], 1] +
       predat$fewer_t1[n] * gamma_t1_prior[sub_t1[n], 2] +
@@ -240,11 +219,11 @@ for(s in 1:nsims){
   # timepoint 2
   for (n in 1:predat$N_t2) {
     
-    mu_pred_t2[n, s] <- predat$more_t2[n] * (predat$cperc_t2[n] - beta_more_t2_prior[sub_t2[n]]) / alpha_t2_prior[sub_t2[n], 1] +
-      predat$fewer_t2[n]  * (predat$cperc_t2[n] - beta_fewer_t2_prior[sub_t2[n]]) / alpha_t2_prior[sub_t2[n], 2] +
-      predat$most_t2[n]  * (predat$cperc_t2[n] - beta_most_t2_prior[sub_t2[n]]) / alpha_t2_prior[sub_t2[n], 3] +
-      predat$many_t2[n]  * (predat$cperc_t2[n] - beta_many_t2_prior[sub_t2[n]]) / alpha_t2_prior[sub_t2[n], 4] +
-      predat$few_t2[n]  * (predat$cperc_t2[n] - beta_few_t2_prior[sub_t2[n]]) / alpha_t2_prior[sub_t2[n], 5] 
+    mu_pred_t2[n, s] <- predat$more_t2[n] * (predat$cperc_t2[n] - beta_t2_more_prior[sub_t2[n]]) / alpha_t2_prior[sub_t2[n], 1] +
+      predat$fewer_t2[n]  * (predat$cperc_t2[n] - beta_t2_fewer_prior[sub_t2[n]]) / alpha_t2_prior[sub_t2[n], 2] +
+      predat$most_t2[n]  * (predat$cperc_t2[n] - beta_t2_most_prior[sub_t2[n]]) / alpha_t2_prior[sub_t2[n], 3] +
+      predat$many_t2[n]  * (predat$cperc_t2[n] - beta_t2_many_prior[sub_t2[n]]) / alpha_t2_prior[sub_t2[n], 4] +
+      predat$few_t2[n]  * (predat$cperc_t2[n] - beta_t2_few_prior[sub_t2[n]]) / alpha_t2_prior[sub_t2[n], 5] 
     
     p_pred_t2[n, s] <- predat$more_t2[n] * gamma_t2_prior[sub_t2[n], 1] +
       predat$fewer_t2[n] * gamma_t2_prior[sub_t2[n], 2] +
@@ -256,7 +235,7 @@ for(s in 1:nsims){
                   predat$most_t2[n] * gamma_t2_prior[sub_t2[n], 3] +
                   predat$many_t2[n] * gamma_t2_prior[sub_t2[n], 4] +
                   predat$few_t2[n] * gamma_t2_prior[sub_t2[n], 5])) *
-    (1 - exp(-pmax(mu_pred_t1[n, s], .001)))
+    (1 - exp(-max(mu_pred_t1[n, s], 0)))
     
     y_pred_t2[n, s] <- rbinom(1, 1, p_pred_t2[n, s])
     
@@ -264,27 +243,28 @@ for(s in 1:nsims){
 
 }
 
-vec <- c(0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100)
-# analyze response patterns: t1
-predat$qq     <- as.numeric(dat_t1$qq)
-predat$cperc_t1       <- predat$cperc_t1 * 100 + 50
-predat$percent_cat_t1 <- cut(predat$cperc_t1,
-                             breaks=vec,
-                             labels=as.character((vec + 5)[-length(vec)]))
-# analyze response patterns: t2
-predat$cperc_t2       <- predat$cperc_t2 * 100 + 50
-predat$percent_cat_t2 <- cut(predat$cperc_t2,
-                             breaks=vec,
-                             labels=as.character((vec + 5)[-length(vec)]))
-# need to fix predat
-analyzePredictedResponsesR(y_pred_t1, predat, testtime = 't1')
-analyzePredictedResponsesR(y_pred_t2, predat, testtime = 't2')
-analyzePredictedResponsesR(y_pred_t1, predat, individual = TRUE, testtime = 't1')
-analyzePredictedResponsesR(y_pred_t2, predat, individual = TRUE, testtime = 't2')
-
+# vec <- c(0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100)
+# # analyze response patterns: t1
+# predat$qq     <- as.numeric(dat_t1$qq)
+# predat$cperc_t1       <- predat$cperc_t1 * 100 + 50
+# predat$percent_cat_t1 <- cut(predat$cperc_t1,
+#                              breaks=vec,
+#                              labels=as.character((vec + 5)[-length(vec)]))
+# # analyze response patterns: t2
+# predat$cperc_t2       <- predat$cperc_t2 * 100 + 50
+# predat$percent_cat_t2 <- cut(predat$cperc_t2,
+#                              breaks=vec,
+#                              labels=as.character((vec + 5)[-length(vec)]))
+# # need to fix predat
+# analyzePredictedResponsesR(y_pred_t1, predat, testtime = 't1')
+# analyzePredictedResponsesR(y_pred_t2, predat, testtime = 't2')
+# plot_list_t1 <- analyzePredictedResponsesR(y_pred_t1, predat, individual = TRUE, testtime = 't1')
+# plot_list_t2  <-analyzePredictedResponsesR(y_pred_t2, predat, individual = TRUE, testtime = 't2')
 # correlations between t1 and t2: alpha, beta, and gamma parameters?
+
   # plot(rowMeans(p_pred_t1), rowMeans(p_pred_t2))
   # cor(rowMeans(p_pred_t1), rowMeans(p_pred_t2))
+
 ```
 
 Conclusion:
@@ -298,21 +278,17 @@ Conclusion:
 # 3 = Few
 # 4 = Most
 # 5 = Many
-b_min          <- c(-0.5, 0, -0.5, 0, -0.5)
-b_max          <- c(0, 0.5, 0, 0.5, 0.5)
-mu_b_sd        <- c(0.1, 0.1, 0.5, 0.5, 0.5)
-invgamma_mub_b <- c(0.5, 0.5, 1, 1, 1)
+mu_b_mean      <- c(0, 0, -0.2, 0.2, 0.2)
 quant          <- c('Fewer', 'More', 'Few', 'Most', 'Many')
 ```
 
 ```{r try_out_model, eval = FALSE}
-# split up the data for the simulation
-dat_t1       <- dat
+# try out model for quantifier "fewer than half"
+# this code is to assess model convergence (divergent transitions, Rhat, chains, correlations)
 predat       <- getDat(dat_t1, dat_t2, prior = prior)
 predat$D     <- 1
 predat$T     <- 2
-predat$b_min <- -0.5
-predat$b_max <- 0
+predat$mu_b_mean <- mu_b_mean[1]
 
 logmodfit <- myRunner(predat
                       , prior = FALSE
@@ -321,58 +297,51 @@ logmodfit <- myRunner(predat
                       , iter = niter
                       , warmup = nwarmup
                       , control = list(adapt_delta = .99, max_treedepth = 17)
-                      , nchains = nchains)
+                      , nchains = 2)
 
 print(names(logmodfit))
-pairs(logmodfit, pars = c("sigma_mu_a"))
-pairs(logmodfit, pars = c("mu_b", "mu_log_a", "mu_g"))
-pairs(logmodfit, pars = c("rho_raw_b", "rho_raw_a", "rho_raw_g"))
+# load(paste0('../output/predat_sim_', filename))
 
+# parameter distributions
+pairs(logmodfit, pars = c("sigma_mu_log_a"))
+pairs(logmodfit, pars = c("sigma_mu_b"))
+pairs(logmodfit, pars = c("sigma_mu_g"))
+pairs(logmodfit, pars = c("mu_log_a"))
+pairs(logmodfit, pars = c("mu_b", "rho_raw_b"))
+pairs(logmodfit, pars = c("mu_g"))
+
+# number of divergent transitions
+colnames(rstan::get_num_divergent(logmodfit)) # no divergent transitions
+
+# Rhats
+list_of_draws <- rstan::extract(logmodfit)
+Rhat          <- sapply(list_of_draws, function(x) rstan::Rhat(as.matrix(x)))
+all((Rhat > 0.95 & Rhat < 1.05))
+
+# traceplots
+traceplot(logmodfit, pars = c("sigma_mu_log_a"))
+traceplot(logmodfit, pars = c("sigma_mu_b"))
+traceplot(logmodfit, pars = c("mu_b"))
+traceplot(logmodfit, pars = c("rho_raw_b"))
+traceplot(logmodfit, pars = c("b[1,1]", "b[1,2]"))
+
+# look at samples
 samples_processed <- removeDivergentTransitions(logmodfit, nchains = nchains)
-
-list_of_draws  <- rstan::extract(logmodfit)
-array_of_draws <- as.array(logmodfit)
-posterior2     <- rstan::extract(logmodfit, inc_warmup = FALSE, permuted = FALSE)
-sampler_params <- rstan::get_sampler_params(logmodfit, inc_warmup = FALSE)
-Rhat <- sapply(list_of_draws, function(x) rstan::Rhat(as.matrix(x)))
-Rhat
-
-samples_processed <- removeDivergentTransitions(logmodfit, nchains = nchains)
-samples_processed <- samples_processed[seq(from=1, to=nrow(samples_processed), by = 50),]
-pred_names_t1     <- colnames(samples_processed)[grepl('y_t1', colnames(samples_processed))]
-pred_names_t2     <- colnames(samples_processed)[grepl('y_t2', colnames(samples_processed))]
-pred_responses_t1 <- samples_processed[, pred_names_t1]
-pred_responses_t1 <- t(pred_responses_t1)
-pred_responses_t2 <- samples_processed[, pred_names_t2]
-pred_responses_t2 <- t(pred_responses_t2)
-# analyze response patterns: t1
-vec <- c(0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100)
-predat$qq     <- as.numeric(dat_t1$qq)
-predat$qq     <- predat$qq[as.logical(predat$many_t1)]
-predat$cperc_t1       <- predat$cperc_t1 * 100 + 50
-predat$percent_cat_t1 <- cut(predat$cperc_t1,
-                             breaks=vec,
-                             labels=as.character((vec + 5)[-length(vec)]))
-# analyze response patterns: t2
-predat$cperc_t2       <- predat$cperc_t2 * 100 + 50
-predat$percent_cat_t2 <- cut(predat$cperc_t2,
-                             breaks=vec,
-                             labels=as.character((vec + 5)[-length(vec)]))
-analyzePredictedResponsesR(y_pred=pred_responses_t1, predat, testtime = 't1', individual = TRUE)
-analyzePredictedResponsesR(y_pred=pred_responses_t2, predat, testtime = 't2', individual = TRUE)
+var_names <- colnames(samples_processed)[!grepl('pred', colnames(samples_processed)) & 
+                                            !grepl('lp__', colnames(samples_processed))]
+round(apply(samples_processed[, var_names], 2, median), 3) 
+hist(samples_processed[, 'mu_g[1]'])
+hist(samples_processed[, 'g[1,2]'])
 ```
 
 
 ```{r run-model, eval = FALSE}
-for(i in 1:length(quant)){
+set.seed(4491)
+for(d in 1:length(quant)){
   
-  predat                <- getDat(dat_t1, dat_t2, prior = prior)
-  predat$b_min          <- b_min[i]
-  predat$b_max          <- b_max[i]
-  predat$mu_b_sd        <- mu_b_sd[i]
-  predat$invgamma_mub_b <- invgamma_mub_b[i]
+  predat           <- getDat(dat_t1, dat_t2, prior = prior)
+  predat$mu_b_mean <- mu_b_mean[d]
   
-  # save(predat, file = paste0('../output/predat_sim_', gsub('stan', 'rda', filename[i])))
   logmodfit <- myRunner(predat
                       , prior = prior
                       , addparams = addparams
@@ -381,7 +350,7 @@ for(i in 1:length(quant)){
                       , warmup = nwarmup
                       , control = list(adapt_delta = .99, max_treedepth = 17)
                       , nchains = nchains)
-  save(logmodfit, file = paste0('../output/',quant[i], '_', gsub('stan', 'rda', filename)))
+  save(logmodfit, file = paste0('../output/',quant[d], '_', gsub('stan', 'rda', filename)))
 
 # if it is a prior distribution
 if(prior){
@@ -389,40 +358,76 @@ if(prior){
   # (1) remove divergent transitions
   samples_processed <- removeDivergentTransitions(logmodfit, nchains = nchains)
   
-  # (2) thin the chains
-  samples_processed <- samples_processed[seq(from=1, to=nrow(samples_processed), by = 50),]
-  
-  # (3) export parameter values from priors
-  pred_names <- colnames(samples_processed)[!grepl('pred', colnames(samples_processed)) & 
+  # (2) remove __lp column from samples
+  var_names <- colnames(samples_processed)[!grepl('pred', colnames(samples_processed)) & 
                                             !grepl('lp__', colnames(samples_processed))]
-  write.csv2(samples_processed[, pred_names],
-             paste0('../output/prior_pred_all_', quant[i], '_', modelname, '.csv'),
+  samples_pars <- samples_processed[, var_names]
+  
+  # (3) compute the posterior means and variances
+  mu_prior  <- apply(samples_pars, 2, mean) 
+  var_prior <- apply(samples_pars, 2, var) 
+  
+  # (4) thin the chains and export parameter values from priors
+  samples_pars <- samples_pars[seq(from=1, to=nrow(samples_pars), by = 50),]
+  write.csv2(samples_pars,
+             paste0('../output/prior_pred_all_', quant[d], '_', modelname, '.csv'),
              row.names = FALSE)
   
-  # (4) export predicted responses from priors
+  # (5) thin the chains of predicted values
   pred_names     <- colnames(samples_processed)[grepl('y_pred', colnames(samples_processed))]
   pred_responses <- samples_processed[, pred_names]
-  pred_responses_orig <- pred_responses
-  colnames(pred_responses_orig) <- paste0('y_pred_', 1:length(pred_names))
-  write.csv2(pred_responses_orig,
-             paste0('../output/prior_pred_', quant[i], '_', modelname, '.csv'),
+  pred_responses <- pred_responses[seq(from=1, to=nrow(pred_responses), by = 50),]
+  
+  # (6) export predicted responses from priors
+  colnames(pred_responses) <- paste0('y_pred_', 1:length(pred_names))
+  write.csv2(pred_responses,
+             paste0('../output/prior_pred_', quant[d], '_', modelname, '.csv'),
              row.names = FALSE)
   
+  # (7) export mean and variance from prior
+  write.csv2(mu_prior, paste0('../output/sim_mu_prior_', modelname, '_', quant[d], '.csv'), 
+             row.names = FALSE)
+  write.csv2(var_prior, paste0('../output/sim_var_prior_', modelname, '_', quant[d], '.csv'), 
+             row.names = FALSE)
+  }
 }
-}
-
 ```
 
 
 # Model validation 
 
 ```{r set-inits-val, eval = TRUE}
-prior     <- FALSE
-modelname <- 'mod_partial_exgauss'
-filename  <- ifelse(prior,  
-                    paste0(modelname, '_prior.rda'), 
-                    paste0(modelname, '.rda'))
+d = 1
+prior      <- FALSE
+modelname  <- 'mod_partial_exp_try'
+filename   <- paste0(quant[d], '_', gsub('stan', 'rda', filename))
 ```
+
+## Plot model predictions
+
+```{r}
+sbc_prior <- read.csv2(paste0('../output/prior_pred_all_', quant[d], '_', modelname, '.csv'),
+                       header = TRUE, sep =';')[1,] # only needed for colnames xD
+mu_prior   <- t(read.csv2(paste0('../output/sim_mu_prior_', modelname, '_', quant[d],'.csv'), 
+                          header = TRUE, sep =';'))
+colnames(mu_prior) <- colnames(sbc_prior)
+
+cperc <- seq(-0.5, 0.5, length.out = 1e3)
+
+plot(cperc, modelPredictions(alpha = exp(mu_prior[colnames(mu_prior) == 'mu_log_a.1.']), 
+                             beta = mu_prior[colnames(mu_prior) == 'mu_b.1.'], 
+                             gamma = abs(mu_prior[colnames(mu_prior) == 'mu_g.1.']), 
+                             cperc),
+     type = 'l',
+     lwd = 2,
+     las = 1,
+     bty = 'n',
+     xlab = 'Presented Proportion',
+     ylab = 'p("True")',
+     xlim = c(-0.5, 0.5),
+     ylim = c(0, 1))
+```
+
 
 ## Inspect predicted response patterns
 
@@ -441,57 +446,51 @@ predat$percent_cat_t2 <- cut(predat$cperc_t2,
 
 y_pred_dat <- list()
 
-for(i in 1:length(quant)){
-  y_pred_dat[[i]] <- t(read.csv(paste0('../output/prior_pred_', quant[i], '_', modelname, '.csv'),
+for(d in 1:length(quant)){
+  y_pred_dat[[d]] <- t(read.csv(paste0('../output/prior_pred_', quant[d], '_', modelname, '.csv'),
                        header = TRUE, sep = ';'))
 }
 
-for(i in 1:length(quant)){
-  predat$quant_name <- quant[i]
-  analyzePredictedResponsesR(y_pred=y_pred_dat[[i]][1:2400,], predat, testtime = 't1', individual = TRUE)
-  analyzePredictedResponsesR(y_pred=y_pred_dat[[i]][2401:4800,], predat, testtime = 't2', individual = TRUE)
+# predicted responses on a group level
+for(d in 1:length(quant)){
+  predat$quant_name <- quant[d]
+  analyzePredictedResponsesR(y_pred=y_pred_dat[[d]][1:2400,]   , predat, testtime = 't1', individual = TRUE)
+  analyzePredictedResponsesR(y_pred=y_pred_dat[[d]][2401:4800,], predat, testtime = 't2', individual = TRUE)
 }
 ```
 
 ## Inspect parameter distribution and convergence
 
-```{r load-post-samples}
+```{r load-samples}
 source('../helper_functions/load_samples.R')
-load(paste0('../output/predat_sim_', filename))
 ```
 
 ```{r check-model-convergence}
-parameters      <- c('alpha', 'beta', 'gamma')
-hyperparameters <- c('sigmaalpha', 'nu', 'mug', 'mub', 'etag', 'etab')
-# hyperparameters <- c('sigma', 'delta')
+parameters      <- c('a', 'b', 'g')
+hyperparameters <- c('sigma_mu_log_a', 'sigma_mu_b', 'sigma_mu_g', 
+                     'mu_log_a', 'mu_b', 'mu_g',
+                     "rho_raw_b", "rho_raw_a", "rho_raw_g")
 
-convergence_diagnostics <- checkModelConvergence(list_of_draws, parameters, hyperparameters, prior)
+convergence_diagnostics <- checkModelConvergence(list_of_draws, parameters, hyperparameters)
 convergence_diagnostics$reached_convergence
 convergence_diagnostics$Rhat_params
-convergence_diagnostics$plot_list[[1]]
-convergence_diagnostics$plot_list[[2]]
-convergence_diagnostics$plot_list[[3]]
+for(i in 1:nchains) convergence_diagnostics$correlation_plot[[i]]
 ```
 
 ```{r remove-divergent-transitions}
+# number of divergent transitions
+colnames(rstan::get_num_divergent(logmodfit))
 # remove divergent transitions before any further analysis
 samples_processed <- removeDivergentTransitions(logmodfit, nchains = nchains)
-# To-Do: how many divergent transitions were removed?
 ```
 
 ```{r check-parameter-distributions}
-pid <- 4
-pars <- c('alpha', 'beta', 'gamma')
-if(prior) pars <- paste0(pars, 'prior')
-
-# Relevant plots: differences in quantifiers for the alpha and beta parameters
-par(mfrow=c(2,2))
-for(i in seq_along(pars)){
-  
-  drawDistribution(pid, quantifier = 'More than half', parameter = pars[i])
-  drawDistribution(pid, quantifier = 'Fewer than half', parameter = pars[i])
-  
-}
+# on the individual level
+pars <- matrix(c('log_a[1,1]', 'log_a[1,2]',
+                 'a[1,1]', 'a[1,2]', 
+                 'b[1,1]', 'b[1,2]', 
+                 'g[1,1]', 'g[1,2]'), ncol = 2, byrow = TRUE)
+for(i in 1:nrow(pars)) pairs(logmodfit, pars = pars[i,])
 ```
 
 ## Prior and posterior predictive checks
@@ -512,7 +511,6 @@ predat$qq    <- ifelse(predat$fewer == 1, 1, 2)
 
 predResponses <- analyzePredictedResponses(samples_processed, predat,
                                            prior, modelname, hyperparameters)
-
 # prior predict: random row
 # posterior predict: aggregated over all
 if(prior){
@@ -529,6 +527,8 @@ for(i in 1:length(predResponses$pred_plot)){
 }
 ```
 
+# Simulation study
+
 ### Sampling characteristics
 
 Convergence diagnostics, sampling properties
@@ -540,59 +540,30 @@ Simulation based calibration.
 - step 2: fit the model to the simulated data
 
 ```{r initialize-simulation-study}
-d = 1
-nsims_target   <- 100
-nsims_ready    <- length(list.files('../output/', pattern=paste0("sim_mu_post_", modelname, '_', quant[d]), full.names = TRUE, recursive = TRUE))
+d = 1 # choose quantifier
+nsims_target   <- 50
+nsims_ready    <- length(list.files('../output/', 
+                                    pattern=paste0("sim_mu_post_", modelname, '_', quant[d]), 
+                                    full.names = TRUE, recursive = TRUE))
 nsims          <- nsims_target - nsims_ready
 
 pred_responses <- read.csv2(paste0('../output/prior_pred_', quant[d], '_', modelname, '.csv'),
                              header = TRUE, sep =';')
-# initialize quantities required for model diagnostics
-  # par_names       <- c("mu_g", "mu_b", "mu_log_a", 
-  #                      "rho_raw_a", "rho_raw_b", "rho_raw_g", 
-  #                      "log_a", "b", "g",
-  #                      "sigma_mu_a", "sigma_mu_b", "sigma_mu_g") 
-  # select relevant columns
-  # par_names_exact <- colnames(sbc_post)[!grepl('pred', colnames(sbc_post)) &
-  #                                       !grepl('lp__', colnames(sbc_post))]
-  # only hyperparameters
-  # par_names_prior <- c(paste0(par_names, 'prior.1.'), paste0(par_names, 'prior.2.'))
-  # par_names_post  <- c(paste0(par_names, '[1]'), paste0(par_names, '[2]'))
 
-model_list     <- rstan::stan_model(file = paste0('../models/', modelname, '.stan'))
-# dat_prior      <- dat
-
+model_list <- rstan::stan_model(file = paste0('../models/', modelname, '.stan'))
+mu_prior   <- t(read.csv2(paste0('../output/sim_mu_prior_', modelname, '_', quant[d],'.csv'), 
+                          header = TRUE, sep =';'))
+var_prior  <- t(read.csv2(paste0('../output/sim_var_prior_', modelname, '_', quant[d],'.csv'), 
+                          header = TRUE, sep =';'))
 # load prior parameters samples (divergent transitions already removed)
-for(d in 1:length(quant)){
-  
-  if (d == 1) {
-    
-    sbc_prior <- read.csv2(paste0('../output/prior_pred_all_', quant[d], '_', modelname, '.csv'),
-                       header = TRUE, sep =';')[1:nsims_target,]    
-  } else {
-    
-    sbc_prior_new <- read.csv2(paste0('../output/prior_pred_all_', quant[d], '_', modelname, '.csv'),
-                       header = TRUE, sep =';') [1:nsims_target,]  
-    sbc_prior <- rbind(sbc_prior, sbc_prior_new)
-    
-  }
-
-}
-
-mu_prior           <- apply(sbc_prior, 2, mean)
+sbc_prior <- read.csv2(paste0('../output/prior_pred_all_', quant[d], '_', modelname, '.csv'),
+                       header = TRUE, sep =';')[1:nsims_target,] 
 par_names_post <- par_names_prior <- colnames(sbc_prior)
-colnames(mu_prior) <- colnames(par_names_prior)
-var_prior          <- apply(sbc_prior, 2, var) 
+colnames(mu_prior) <- colnames(var_prior) <- colnames(sbc_prior)
 ```
 
 
 ```{r run-simulation-study, eval = FALSE}
-# # compute necessary quantities
-#   rank           <- data.frame(matrix(nrow = 0, ncol = length(par_names_post))) 
-#   mu_post        <- data.frame(matrix(nrow = 0, ncol = length(par_names_post))) 
-#   var_post       <- data.frame(matrix(nrow = 0, ncol = length(par_names_post))) 
-#   ci_post        <- list()
-#   colnames(rank) <- colnames(mu_post) <- colnames(var_post) <- par_names_post
 niter   <- 1500
 nwarmup <- 500
 
@@ -601,12 +572,8 @@ for(i in 1:nsims){
   predat         <- getDat(dat_t1, dat_t2, prior = FALSE)
   predat$y_t1    <- as.integer(pred_responses[nsims_ready + i, 1:2400])
   predat$y_t2    <- as.integer(pred_responses[nsims_ready + i, 2401:4800])
-  predat$b_min          <- b_min[d]
-  predat$b_max          <- b_max[d]
-  predat$mu_b_sd        <- mu_b_sd[d]
-  #predat$invgamma_mub_b <- invgamma_mub_b[d]
+  predat$mu_b_mean  <- mu_b_mean[d]
   
-  save(predat, file = paste0('../output/predat_sbc_', quant[d], nsims_ready + i, '_',  modelname, '.rda'))
   logmodfit <- myRunner(predat
                       , prior = FALSE
                       , addparams = addparams
@@ -621,7 +588,7 @@ for(i in 1:nsims){
   sbc_post <- sbc_post[, -which(colnames(sbc_post) == 'lp__')]
   par_names_post  <- colnames(sbc_post) 
   par_names_prior <- colnames(sbc_prior)
-  # compute the posterior means and variances
+  # compute the posterior medians and variances
   mu_post  <- apply(sbc_post, 2, mean)
   var_post <- apply(sbc_post, 2, var) 
   # compute the 50% and 80% credible intervals
@@ -661,8 +628,8 @@ npars          <- ncol(sbc_prior)
   ci_post        <- list()
   colnames(rank) <- colnames(mu_post) <- colnames(var_post) <- par_names_post
 
-  
-for(d in 1:5){
+d=1
+# for(d in 1:5){
   for(i in 1:100){
     
      mu_post[nrow(mu_post) + 1,] <-  t(read.csv2(paste0('../output/sim_mu_post_', modelname, '_', quant[d], i, '.csv'),
@@ -674,13 +641,13 @@ for(d in 1:5){
       ci_post[[length(ci_post) + 1]] <-  read.csv2(paste0('../output/sim_ci_post_', modelname, '_', quant[d], i, '.csv'),
                              header = TRUE, sep =';')
   }
-}
+# }
 
 ```
 
 
 - step 3: compute the rank statistics of the prior estimates with the 'posterior' estimates
-- we are interested in the hyperlevel parameters
+- we are interested in the hyper-level parameters
 - each posterior simulation should return only one value, that is, the number of samples smaller than the prior sample
 
 ```{r sbc}
@@ -727,11 +694,8 @@ for(j in 1:npars){
   
 ```{r model-sensitivity}
 # based on the model specification
-z <- mu_post - sbc_prior
-contraction <- var_post - var_prior
 z <- t(apply(mu_post, 1, function(x) x - mu_prior))/sqrt(var_post)
-z <- t(apply(mu_post, 1, function(x) x - mu_prior))
-contraction <- t(apply(var_post, 1, function(x) x - var_prior))
+# z <- t(apply(mu_post, 1, function(x) x - mu_prior))
 contraction <- t(apply(var_post, 1, function(x)  1 - (x/var_prior)))
 
 # scatter plot 1
@@ -754,32 +718,6 @@ for(j in 1:npars){
   abline(h=0, lty=3)
     
 }
-
-# look at specific parameters
-rhos <- c(80, 81, 82)
-
-rhos <- c(19, 20, 37, 38, 64, 65)
-rhos <- which(grepl('^mu', par_names_post))
-par(mfrow=c(3, 2))
-
-for(j in 1:length(rhos)){
-  
-    plot(contraction[,rhos[j]], z[,rhos[j]],
-       xlab = 'Posterior contraction',
-       ylab = 'Posterior z-score',
-       main = par_names_post[rhos[j]],
-       xlim = c(-1, 1),
-       ylim = c(-4, 4),
-       las = 1, bty = 'n',
-       pch = 21,
-       col = 'grey36', bg = c3)
-  points(mean(contraction[,rhos[j]]), mean(z[,rhos[j]]),
-         col = 'blue',
-         pch = 18)
-  abline(h=0, lty=3)
-  
-}
-
 ```
 
 ## Parameter Recovery and Coverage Probability (Posterior)
