@@ -1,5 +1,16 @@
-# other helper functions
+# compute model predictions
+modelPredictions <- function(alpha, beta, gamma, cperc){
+  
+  mu <- (cperc - beta)/alpha
+  mu[cperc <= beta] <- 0
+  
+  pi <-  gamma + (1 - 2 * gamma) * (1 - exp(- mu))
+  
+  return(pi)
+  
+}
 
+# other helper functions
 transparentColor <- function(color, percent = 50, name = NULL) {
 
   rgb.val <- grDevices::col2rgb(color)
@@ -67,10 +78,7 @@ removeDivergentTransitions <- function(logmodfit, nchains = 3){
   
 }
 
-checkModelConvergence <- function(list_of_draws, parameters, hyperparameters, prior){
-  
-  if(prior) parameters      <- paste0(parameters, 'prior')
-  if(prior) hyperparameters <- paste0(hyperparameters, 'prior')
+checkModelConvergence <- function(list_of_draws, parameters, hyperparameters){
   
   # Rhat diagnostics
   params_of_interest <- c(parameters, hyperparameters)
@@ -441,7 +449,7 @@ my_rnorm <- function(nsamp = 1, mu, sigma, lower, upper){
   }
   return(est)
 }
-my_mvrnorm <- function(nsamp = 1, Mu, Sigma, lower, upper){
+my_rmvnorm <- function(nsamp = 1, Mu, Sigma, lower, upper){
   
   est <- mvtnorm::rmvnorm(nsamp, Mu, Sigma)
   
@@ -458,7 +466,7 @@ my_mvrnorm <- function(nsamp = 1, Mu, Sigma, lower, upper){
 makeS <- function(rho, sigma){
   
   R  <- matrix(c(1, rho, rho, 1), 2, 2)
-  V  <- diag(sigma, t, t)
+  V  <- diag(sigma, 2, 2)
   S  <- V %*% R %*% V
   
   return(S)
