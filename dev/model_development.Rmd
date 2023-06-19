@@ -3,6 +3,8 @@ title: "model_development"
 author: "AlexandraSarafoglou"
 date: "2023-03-28"
 output: html_document
+editor_options: 
+  chunk_output_type: console
 ---
 
 ```{r load-packages-and-functions}
@@ -25,9 +27,10 @@ c3 <- transparentColor(color = "grey36", percent = 50, name = 'colpost')
 ```
 
 ```{r read-data}
-dat_t1 <- read.csv('../data/simulated-all-data-partial_t1.csv', header = TRUE)
-dat_t2 <- read.csv('../data/simulated-all-data-partial_t2.csv', header = TRUE)
-# dat_t1    <- read.csv('../data/exp1-preprocessed-all.csv', header = TRUE)
+dat_t1 <- read.csv('../data/simulated-all-data-1.csv', header = TRUE)
+dat_t2 <- read.csv('../data/simulated-all-data-2.csv', header = TRUE)
+# dat_t1 <- read.csv('../data/simulated-all-large-data-1.csv', header = TRUE)
+# dat_t2 <- read.csv('../data/simulated-all-large-data-2.csv', header = TRUE)
 dat_t1$qq <- as.factor(dat_t1$qq)
 dat_t2$qq <- as.factor(dat_t2$qq)
 niter      <- 5000
@@ -45,8 +48,8 @@ Run all stan models.
 
 ```{r set-inits-devel, eval = TRUE}
 run_all    <- FALSE
-prior      <- TRUE
-modelname  <- 'mod_partial_exp_try'
+prior      <- FALSE
+modelname  <- 'mod_partial_exp_t1'
 
 if(run_all){
   
@@ -271,6 +274,7 @@ Conclusion:
 - gamma needs to be restricted to values smaller than 0.5 (as it flips the distribution otherwise)
 - beta needs to range between -0.5 and 0.5 to be on the same scale as cperc
 - alpha: draw from normal distribution, then exponentiate, priors can be reused
+- Watch out for Opaque priors when we fit this model in stan!
 
 ```{r initialize_b_thresholds, eval = TRUE}
 # 1 = FewerThanHalf
@@ -286,18 +290,17 @@ quant          <- c('Fewer', 'More', 'Few', 'Most', 'Many')
 # try out model for quantifier "fewer than half"
 # this code is to assess model convergence (divergent transitions, Rhat, chains, correlations)
 predat       <- getDat(dat_t1, dat_t2, prior = prior)
-predat$D     <- 1
-predat$T     <- 2
+# predat       <- getDat(dat_t1, prior = prior) # univariate case
 predat$mu_b_mean <- mu_b_mean[1]
 
 logmodfit <- myRunner(predat
-                      , prior = FALSE
                       , addparams = addparams
                       , mod = model_list[[1]]
                       , iter = niter
+                      , ncores = nchains
                       , warmup = nwarmup
                       , control = list(adapt_delta = .99, max_treedepth = 17)
-                      , nchains = 2)
+                      , nchains = nchains)
 
 print(names(logmodfit))
 # load(paste0('../output/predat_sim_', filename))
@@ -315,7 +318,8 @@ colnames(rstan::get_num_divergent(logmodfit)) # no divergent transitions
 
 # Rhats
 list_of_draws <- rstan::extract(logmodfit)
-Rhat          <- sapply(list_of_draws, function(x) rstan::Rhat(as.matrix(x)))
+Rhat          <- summary(logmodfit)$summary[,'Rhat']
+Rhat          <- Rhat[!(names(Rhat) %in% c('L_Sigma_b[1,2]', 'L_Sigma_g[1,2]'))]
 all((Rhat > 0.95 & Rhat < 1.05))
 
 # traceplots
@@ -326,12 +330,52 @@ traceplot(logmodfit, pars = c("rho_raw_b"))
 traceplot(logmodfit, pars = c("b[1,1]", "b[1,2]"))
 
 # look at samples
-samples_processed <- removeDivergentTransitions(logmodfit, nchains = nchains)
-var_names <- colnames(samples_processed)[!grepl('pred', colnames(samples_processed)) & 
-                                            !grepl('lp__', colnames(samples_processed))]
-round(apply(samples_processed[, var_names], 2, median), 3) 
-hist(samples_processed[, 'mu_g[1]'])
-hist(samples_processed[, 'g[1,2]'])
+samples <- removeDivergentTransitions(logmodfit, nchains = nchains)
+var_names <- colnames(samples)[!grepl('pred', colnames(samples)) & 
+                                            !grepl('lp__', colnames(samples))]
+round(apply(samples[, var_names], 2, median), 3) 
+
+# check for opaque priors in the group-level parameters
+hist(samples[, 'mu_g[1]'], freq = FALSE)
+lines(density(rnorm(1e4, 0.17, 0.05))) # it's still slightly off: rnorm(0.19, 0.05)
+hist(samples[, 'sigma_mu_g[1]'], freq = FALSE)
+lines(density(1/rgamma(1e4, 12, 1))) # it's still slightly off: 1/rgamma(1e4, 13, 1)
+hist(samples[, 'rho_raw_g'], freq = FALSE)
+lines(density(rbeta(1e4, 4, 4)))
+hist(samples[, 'g[1,2]'])
+
+hist(samples[, 'mu_b[1]'], freq = FALSE)
+lines(density(rnorm(1e4, 0, 0.1)))
+hist(samples[, 'sigma_mu_b[1]'], freq = FALSE)
+lines(density(1/rgamma(1e4, 6, 1)))
+hist(samples[, 'rho_raw_b'], freq = FALSE)
+lines(density(rbeta(1e4, 4, 4)))
+
+hist(samples[, 'mu_log_a[1]'], freq = FALSE)
+lines(density(rnorm(1e4, -3, 1)))
+hist(samples[, 'sigma_mu_log_a[1]'], freq = FALSE)
+lines(density(1/rgamma(1e4, 2, 1)))
+
+# for the univariate case
+pairs(logmodfit, pars = c("sigma_mu_log_a", "sigma_mu_b"))
+pairs(logmodfit, pars = c("sigma_mu_b", "sigma_mu_g"))
+pairs(logmodfit, pars = c("mu_b", "mu_g", "mu_log_a"))
+
+hist(samples[, 'mu_g'], freq = FALSE)
+lines(density(rnorm(1e4, 0.17, 0.05))) # it's still slightly off: rnorm(0.19, 0.05)
+hist(samples[, 'sigma_mu_g'], freq = FALSE)
+lines(density(1/rgamma(1e4, 12, 1))) # it's still slightly off: 1/rgamma(1e4, 13, 1)
+hist(samples[, 'g[1]'])
+
+hist(samples[, 'mu_b'], freq = FALSE)
+lines(density(rnorm(1e4, 0, 0.1)))
+hist(samples[, 'sigma_mu_b'], freq = FALSE)
+lines(density(1/rgamma(1e4, 6, 1)))
+
+hist(samples[, 'mu_log_a'], freq = FALSE)
+lines(density(rnorm(1e4, -3, 1)))
+hist(samples[, 'sigma_mu_log_a'], freq = FALSE)
+lines(density(1/rgamma(1e4, 2, 1)))
 ```
 
 
@@ -343,10 +387,10 @@ for(d in 1:length(quant)){
   predat$mu_b_mean <- mu_b_mean[d]
   
   logmodfit <- myRunner(predat
-                      , prior = prior
                       , addparams = addparams
                       , mod = model_list[[1]]
                       , iter = niter
+                      , ncores = nchains
                       , warmup = nwarmup
                       , control = list(adapt_delta = .99, max_treedepth = 17)
                       , nchains = nchains)
@@ -393,30 +437,240 @@ if(prior){
 }
 ```
 
+```{r run-model-sonia-prior, eval = FALSE}
+# make sure you loaded the correct dataset: "/exp1-preprocessed-all.csv"
+# make sure you load the correct model: "mod_partial_exp_t1_prior"
+filename   <- "mod_partial_exp_t1_prior.stan"
+model_list <- rstan::stan_model(file = paste0('../models/', filename))
+
+# fit the model to each quantifier individually
+dat_t1    <- read.csv('../data/exp1-preprocessed-all.csv', header = TRUE)
+# make quantifiers identifiable: keep only first word so it matches quant
+dat_t1$quant <- stringr::word(dat_t1$quant, 1)
+
+set.seed(4491)
+for(d in 1:length(quant)){
+  
+  dat              <- dat_t1[grepl(paste0(quant[d], '$'), dat_t1$quant), ] 
+  predat           <- getDat(dat, prior = FALSE)
+  predat$mu_b_mean <- mu_b_mean[d]
+  
+  logmodfit <- myRunner(predat
+                      , mod = model_list
+                      , iter = niter
+                      , ncores = nchains
+                      , warmup = nwarmup
+                      , control = list(adapt_delta = .99, max_treedepth = 17)
+                      , nchains = nchains)
+
+  # (1) remove divergent transitions and thin the chains
+  samples_processed <- removeDivergentTransitions(logmodfit, nchains = nchains)
+  samples_processed <- samples_processed[seq(from=1, to=nrow(samples_processed), by = 50),]
+  
+  # (2) compute the posterior means
+  mus  <- apply(samples_processed, 2, mean)
+  
+  # (2) export parameter values
+  write.csv2(t(as.data.frame(mus)), paste0('../output/ramotowska_t1_all_mu_prior', quant[d], '.csv'), 
+             row.names = FALSE)
+  write.csv2(samples_processed,
+             paste0('../output/ramotowska_t1_all_prior', quant[d], '.csv'),
+             row.names = FALSE)
+}
+```
+
+```{r run-model-sonia, eval = FALSE}
+# make sure you loaded the correct dataset: "/exp1-preprocessed-all.csv"
+# make sure you load the correct model: "mod_partial_exp_t1"
+filename   <- "mod_partial_exp_t1.stan"
+model_list <- rstan::stan_model(file = paste0('../models/', filename))
+
+# fit the model to each quantifier individually
+dat_t1    <- read.csv('../data/exp1-preprocessed-all.csv', header = TRUE)
+# make quantifiers identifiable: keep only first word so it matches quant
+dat_t1$quant <- stringr::word(dat_t1$quant, 1)
+
+set.seed(4491)
+for(d in 2:length(quant)){
+  
+  dat              <- dat_t1[grepl(paste0(quant[d], '$'), dat_t1$quant), ] 
+  predat           <- getDat(dat, prior = FALSE)
+  predat$mu_b_mean <- mu_b_mean[d]
+  
+  logmodfit <- myRunner(predat
+                      , mod = model_list
+                      , iter = niter
+                      , ncores = nchains
+                      , warmup = nwarmup
+                      , control = list(adapt_delta = .99, max_treedepth = 17)
+                      , nchains = nchains)
+
+  # (1) remove divergent transitions and thin the chains
+  samples_processed <- removeDivergentTransitions(logmodfit, nchains = nchains)
+  samples_processed <- samples_processed[seq(from=1, to=nrow(samples_processed), by = 50),]
+  
+  # (2) compute the posterior means
+  mus  <- apply(samples_processed, 2, mean)
+  
+  # (2) export parameter values
+  write.csv2(t(as.data.frame(mus)), paste0('../output/ramotowska_t1_all_mu_', quant[d], '.csv'), 
+             row.names = FALSE)
+  write.csv2(samples_processed,
+             paste0('../output/ramotowska_t1_all_', quant[d], '.csv'),
+             row.names = FALSE)
+}
+```
+
+```{r visualize-posterior-predictive-group, eval = FALSE}
+par(mfrow=c(2, 3))
+
+for(d in 1:5){
+  mu <-  read.csv2(paste0('../output/ramotowska_t1_all_mu_', quant[d], '.csv'),
+                         header = TRUE, sep =';')
+  dat                 <- dat_t1[grepl(paste0(quant[d], '$'), dat_t1$quant), ] 
+  prop_observed_group <- tapply(dat$resp, dat$percent_cat, mean, na.rm = T)
+  cperc_observed <- c(25 - ((25-1) / 2),
+                      40 - ((40-26) / 2), 
+                      50 - ((50-41) / 2), 
+                      60 - ((60-51) / 2), 
+                      75 - ((75-61) / 2), 
+                      100 - ((100-76) / 2))/100 - 0.5
+  cperc <- seq(-0.5, 0.5, length.out = 1e3)
+  
+  # plot
+  plot(cperc, modelPredictions(alpha = exp(mu[colnames(mu) == 'mu_log_a']), 
+                               beta  = mu[colnames(mu) == 'mu_b'], 
+                               gamma = mu[colnames(mu) == 'mu_g'], 
+                               cperc = cperc),
+       type = 'l',
+       lwd = 2,
+       las = 1,
+       bty = 'n',
+       main = quant[d],
+       xlab = 'Presented Proportion',
+       ylab = 'p("True")',
+       xlim = c(-0.5, 0.5),
+       ylim = c(0, 1))
+points(cperc_observed, prop_observed_group, pch = 2, lwd = 2)
+}
+```
+
+```{r prior-posterior-group, eval = FALSE}
+par(mfrow=c(2, 3))
+
+for(d in 1:5){
+  prior <- read.csv2(paste0('../output/ramotowska_t1_all_prior', quant[d], '.csv'),
+                         header = TRUE, sep =';')
+  post  <-  read.csv2(paste0('../output/ramotowska_t1_all_', quant[d], '.csv'),
+                         header = TRUE, sep =';')
+  # mus
+  plot(density(exp(post[,colnames(post) == 'mu_log_a'])),
+       xlim = c(0, 0.4),
+       las = 1,
+       bty = 'n',
+       main = paste('Mu Vagueness:', quant[d]))
+  lines(density(exp(prior[,colnames(prior) == 'mu_log_a'])), lty = 3)
+  
+  plot(density(post[,colnames(post) == 'mu_b']),
+       xlim = c(-0.5, 0.5),
+       las = 1,
+       bty = 'n',
+       main = paste('Mu Threshold:', quant[d]))
+  lines(density(prior[,colnames(prior) == 'mu_b']), lty = 3)
+  
+  plot(density(post[,colnames(post) == 'mu_g']),
+       xlim = c(0, 0.5),
+       las = 1,
+       bty = 'n',
+       main = paste('Mu Response noise:', quant[d]))
+  lines(density(prior[,colnames(prior) == 'mu_g']), lty = 3)
+  
+  # sigmas
+  plot(density(exp(post[,colnames(post) == 'sigma_mu_log_a'])),
+       xlim = c(0, 4),
+       las = 1,
+       bty = 'n',
+       main = paste('Sd Vagueness:', quant[d]))
+  lines(density(exp(prior[,colnames(prior) == 'sigma_mu_log_a'])), lty = 3)
+  
+  plot(density(post[,colnames(post) == 'sigma_mu_b']),
+       xlim = c(0, 0.5),
+       las = 1,
+       bty = 'n',
+       main = paste('Sd Threshold:', quant[d]))
+  lines(density(prior[,colnames(prior) == 'sigma_mu_b']), lty = 3)
+                      
+  plot(density(post[,colnames(post) == 'sigma_mu_g']),
+       xlim = c(0, 0.5),
+       las = 1,
+       bty = 'n',
+       main = paste('Sd Response noise:', quant[d]))
+  lines(density(prior[,colnames(prior) == 'sigma_mu_g']), lty = 3)
+  
+}
+```
+
+```{r visualize-posterior-predictive-ind, eval = FALSE}
+par(mfrow=c(2, 3))
+
+
+for(d in 1:3){
+  mu <-  read.csv2(paste0('../output/ramotowska_t1_all_mu_', quant[d], '.csv'),
+                         header = TRUE, sep =';')
+  nind                <- length(colnames(mu)[grepl('^log_a', colnames(mu))])
+  dat                 <- dat_t1[grepl(paste0(quant[d], '$'), dat_t1$quant), ] 
+  prop_observed_ind   <- tapply(dat$resp, list(dat$percent_cat, dat$workerid), mean, na.rm = T)
+  cperc_observed <- c(25 - ((25-1) / 2),
+                      40 - ((40-26) / 2), 
+                      50 - ((50-41) / 2), 
+                      60 - ((60-51) / 2), 
+                      75 - ((75-61) / 2), 
+                      100 - ((100-76) / 2))/100 - 0.5
+  cperc <- seq(-0.5, 0.5, length.out = 1e3)
+  
+  for(i in 1:nind){
+    plot(cperc, modelPredictions(alpha = exp(mu[colnames(mu) == paste0('log_a.', i, '.')]), 
+                                 beta  = mu[colnames(mu) == paste0('b.', i, '.')], 
+                                 gamma = mu[colnames(mu) == paste0('g.', i, '.')], 
+                                 cperc = cperc),
+         type = 'l',
+         las = 1,
+         lwd = 2,
+         bty = 'n',
+         main = paste(quant[d], i),
+         xlab = 'Presented Proportion',
+         ylab = 'p("True")',
+         xlim = c(-0.5, 0.5),
+         ylim = c(0, 1))
+    points(cperc_observed, prop_observed_ind[,i], pch = 2, col = 'red', lwd = 2)
+  }
+}
+```
 
 # Model validation 
 
 ```{r set-inits-val, eval = TRUE}
-d = 1
+d = 3
 prior      <- FALSE
-modelname  <- 'mod_partial_exp_try'
+modelname  <- 'mod_partial_exp'
 filename   <- paste0(quant[d], '_', gsub('stan', 'rda', filename))
 ```
 
 ## Plot model predictions
 
-```{r}
+```{r, eval = FALSE}
 sbc_prior <- read.csv2(paste0('../output/prior_pred_all_', quant[d], '_', modelname, '.csv'),
                        header = TRUE, sep =';')[1,] # only needed for colnames xD
 mu_prior   <- t(read.csv2(paste0('../output/sim_mu_prior_', modelname, '_', quant[d],'.csv'), 
                           header = TRUE, sep =';'))
 colnames(mu_prior) <- colnames(sbc_prior)
-
 cperc <- seq(-0.5, 0.5, length.out = 1e3)
 
+# mu_g: take expected value and median of truncated normal distribution
+# see two-sided truncation at: https://en.wikipedia.org/wiki/Truncated_normal_distribution
 plot(cperc, modelPredictions(alpha = exp(mu_prior[colnames(mu_prior) == 'mu_log_a.1.']), 
                              beta = mu_prior[colnames(mu_prior) == 'mu_b.1.'], 
-                             gamma = abs(mu_prior[colnames(mu_prior) == 'mu_g.1.']), 
+                             gamma = mu_prior[colnames(mu_prior) == 'mu_g.1.'], 
                              cperc),
      type = 'l',
      lwd = 2,
@@ -426,6 +680,12 @@ plot(cperc, modelPredictions(alpha = exp(mu_prior[colnames(mu_prior) == 'mu_log_
      ylab = 'p("True")',
      xlim = c(-0.5, 0.5),
      ylim = c(0, 1))
+lines(cperc, modelPredictions(alpha = exp(mu_prior[colnames(mu_prior) == 'mu_log_a.2.']), 
+                             beta = mu_prior[colnames(mu_prior) == 'mu_b.2.'], 
+                             gamma = abs(mu_prior[colnames(mu_prior) == 'mu_g.2.']), 
+                             cperc),
+      lty = 3,
+      lwd = 2)
 ```
 
 
@@ -454,18 +714,18 @@ for(d in 1:length(quant)){
 # predicted responses on a group level
 for(d in 1:length(quant)){
   predat$quant_name <- quant[d]
-  analyzePredictedResponsesR(y_pred=y_pred_dat[[d]][1:2400,]   , predat, testtime = 't1', individual = TRUE)
-  analyzePredictedResponsesR(y_pred=y_pred_dat[[d]][2401:4800,], predat, testtime = 't2', individual = TRUE)
+  analyzePredictedResponsesR(y_pred=y_pred_dat[[d]][1:4000,]   , predat, testtime = 't1', individual = TRUE)
+  analyzePredictedResponsesR(y_pred=y_pred_dat[[d]][4001:8000,], predat, testtime = 't2', individual = TRUE)
 }
 ```
 
 ## Inspect parameter distribution and convergence
 
-```{r load-samples}
+```{r load-samples, eval = FALSE}
 source('../helper_functions/load_samples.R')
 ```
 
-```{r check-model-convergence}
+```{r check-model-convergence, eval = FALSE}
 parameters      <- c('a', 'b', 'g')
 hyperparameters <- c('sigma_mu_log_a', 'sigma_mu_b', 'sigma_mu_g', 
                      'mu_log_a', 'mu_b', 'mu_g',
@@ -477,14 +737,14 @@ convergence_diagnostics$Rhat_params
 for(i in 1:nchains) convergence_diagnostics$correlation_plot[[i]]
 ```
 
-```{r remove-divergent-transitions}
+```{r remove-divergent-transitions, eval = FALSE}
 # number of divergent transitions
 colnames(rstan::get_num_divergent(logmodfit))
 # remove divergent transitions before any further analysis
 samples_processed <- removeDivergentTransitions(logmodfit, nchains = nchains)
 ```
 
-```{r check-parameter-distributions}
+```{r check-parameter-distributions, eval = FALSE}
 # on the individual level
 pars <- matrix(c('log_a[1,1]', 'log_a[1,2]',
                  'a[1,1]', 'a[1,2]', 
@@ -502,7 +762,7 @@ for(i in 1:nrow(pars)) pairs(logmodfit, pars = pars[i,])
   * vagueness: at threshold parameter: maximum uncertainty, about 50% probability to say 'true'
 - To-Do: individual response patterns generated from the prior predictives make no sense
 
-```{r inspect-response-patterns}
+```{r inspect-response-patterns, eval = FALSE}
 if(max(predat$cperc) < 1) predat$cperc <- predat$cperc * 100 + 50
 predat$percent_cat <- cut(predat$cperc,
                       breaks=c(0, 20, 40, 60, 80, 100),
@@ -540,8 +800,9 @@ Simulation based calibration.
 - step 2: fit the model to the simulated data
 
 ```{r initialize-simulation-study}
-d = 1 # choose quantifier
-nsims_target   <- 50
+d = 4 # choose quantifier
+model_list     <- rstan::stan_model(file = paste0('../models/', modelname, '.stan'))
+nsims_target   <- 100
 nsims_ready    <- length(list.files('../output/', 
                                     pattern=paste0("sim_mu_post_", modelname, '_', quant[d]), 
                                     full.names = TRUE, recursive = TRUE))
@@ -549,8 +810,6 @@ nsims          <- nsims_target - nsims_ready
 
 pred_responses <- read.csv2(paste0('../output/prior_pred_', quant[d], '_', modelname, '.csv'),
                              header = TRUE, sep =';')
-
-model_list <- rstan::stan_model(file = paste0('../models/', modelname, '.stan'))
 mu_prior   <- t(read.csv2(paste0('../output/sim_mu_prior_', modelname, '_', quant[d],'.csv'), 
                           header = TRUE, sep =';'))
 var_prior  <- t(read.csv2(paste0('../output/sim_var_prior_', modelname, '_', quant[d],'.csv'), 
@@ -570,15 +829,16 @@ nwarmup <- 500
 for(i in 1:nsims){
   
   predat         <- getDat(dat_t1, dat_t2, prior = FALSE)
-  predat$y_t1    <- as.integer(pred_responses[nsims_ready + i, 1:2400])
-  predat$y_t2    <- as.integer(pred_responses[nsims_ready + i, 2401:4800])
+  predat$y_t1    <- as.integer(pred_responses[nsims_ready + i, 1:predat$N_t1])
+  predat$y_t2    <- as.integer(pred_responses[nsims_ready + i, 
+                                              (predat$N_t1 + 1):(predat$N_t2 + predat$N_t1)])
   predat$mu_b_mean  <- mu_b_mean[d]
   
   logmodfit <- myRunner(predat
-                      , prior = FALSE
                       , addparams = addparams
                       , mod = model_list
                       , iter = niter
+                      , ncores = nchains
                       , warmup = nwarmup
                       , control = list(adapt_delta = .97, max_treedepth = 14)
                       , nchains = nchains)
@@ -628,9 +888,9 @@ npars          <- ncol(sbc_prior)
   ci_post        <- list()
   colnames(rank) <- colnames(mu_post) <- colnames(var_post) <- par_names_post
 
-d=1
+d=2
 # for(d in 1:5){
-  for(i in 1:100){
+  for(i in 1:nsims_ready){
     
      mu_post[nrow(mu_post) + 1,] <-  t(read.csv2(paste0('../output/sim_mu_post_', modelname, '_', quant[d], i, '.csv'),
                              header = TRUE, sep =';'))
@@ -661,22 +921,6 @@ for(j in 1:npars){
        xlab = 'Rank')
     
 }
-
-# # to visualize the overlap between the two distributions
-# par(mfrow=c(2, 2))
-# 
-# for(j in 1:length(par_names_prior)){
-#   
-#   hgA      <- hist(sbc_prior[, par_names_prior[j]], plot = FALSE) 
-#   hgB      <- hist(sbc_post[, par_names_post[j]] , plot = FALSE) 
-#   ylim_max <- max(signif(hgA$density * 1.1, 3), signif(hgB$density * 1.1, 3))
-#   
-#   hist(sbc_prior[, par_names_prior[j]], las = 1, col = c1, xlab = par_names_exact[j], 
-#        main = '', ylim = c(0, ylim_max), freq = FALSE)
-#   hist(sbc_post[, par_names_post[j]], las = 1, col = c2, freq = FALSE, add = TRUE)
-#   
-# }
-
 ```
 
 
@@ -694,8 +938,8 @@ for(j in 1:npars){
   
 ```{r model-sensitivity}
 # based on the model specification
-z <- t(apply(mu_post, 1, function(x) x - mu_prior))/sqrt(var_post)
-# z <- t(apply(mu_post, 1, function(x) x - mu_prior))
+# alternative
+z           <- (mu_post - sbc_prior) / sqrt(var_post)
 contraction <- t(apply(var_post, 1, function(x)  1 - (x/var_prior)))
 
 # scatter plot 1
@@ -704,8 +948,8 @@ par(mfrow=c(3, 3))
 for(j in 1:npars){
     
   plot(contraction[,j], z[,j],
-       xlab = 'Var_post - Var_prior',
-       ylab = 'Mu_post - Mu_prior',
+       xlab = 'Posterior Contraction',
+       ylab = 'Z Score',
        main = par_names_post[j],
        xlim = c(-1, 1),
        ylim = c(-4, 4),
@@ -744,28 +988,6 @@ for(j in 1:npars){
   abline(0, 1)
  # text(pos_x, pos_y, labels=paste0('r =', round(correlation, 2)), font=2, cex = 1.5)
 }
-
-# only show the correlations
-par(mfrow=c(3, 1))
-rhos <- c(80, 81, 82)
-for(j in 1:length(rhos)){
-  
-  pos_x <- quantile(sbc_prior[,rhos[j]], 0.80)
-  pos_y <- quantile(mu_post[,rhos[j]], 0.20)
-  correlation <- cor(sbc_prior[,rhos[j]], mu_post[,rhos[j]])
-  plot(sbc_prior[,rhos[j]], mu_post[,rhos[j]],
-       xlab = 'True',
-       ylab = 'Estimated',
-       main = par_names_post[rhos[j]],
-       las = 1, bty = 'n',
-       pch = 21,
-      # xlim = c(-1, 1),
-      # ylim = c(-1, 1),
-       col = 'grey36', bg = c3)
-  #abline(0, 1)
-  text(pos_x, pos_y, labels=paste0('r =', round(correlation, 2)), font=2, cex = 1.5)
-}
-
 ```
 
 
@@ -798,7 +1020,9 @@ for(i in 1:nsims_ready){
 
 # relative frequency and To-Do: 95% CI for binomial proportion 
 liesWithin50PercentCI <- apply(liesWithin50PercentCI, 2, mean)
+hist(liesWithin50PercentCI)
 liesWithin80PercentCI <- apply(liesWithin80PercentCI, 2, mean)
+hist(liesWithin80PercentCI)
 ```
 
 
