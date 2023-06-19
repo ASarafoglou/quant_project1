@@ -1,11 +1,15 @@
 # compute model predictions
 modelPredictions <- function(alpha, beta, gamma, cperc){
   
+  alpha <- as.numeric(alpha)
+  beta <- as.numeric(beta)
+  gamma <- as.numeric(gamma)
+  
   mu <- (cperc - beta)/alpha
   mu[cperc <= beta] <- 0
   
   pi <-  gamma + (1 - 2 * gamma) * (1 - exp(- mu))
-  
+
   return(pi)
   
 }

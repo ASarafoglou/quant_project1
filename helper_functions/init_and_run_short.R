@@ -6,35 +6,25 @@ getDat <- function(dat_t1, dat_t2 = NULL, prior = FALSE){
 
   if(is.null(dat_t2)){
     
-    D     <- length(levels(dat$qq))
-    N     <- nrow(dat)
-    I     <- length(unique(dat$workerid))
-    Time  <- 1
-    y     <- dat$resp
-    cperc <- (dat$percent - 50) / 100
-    sub   <- as.numeric(factor(dat$workerid))
-    quant_name <- levels(dat$qq)
+    D     <- length(unique(dat_t1$quant))
+    N     <- nrow(dat_t1)
+    I     <- length(unique(dat_t1$workerid))
+    y     <- dat_t1$resp
+    cperc <- (dat_t1$percent - 50) / 100
+    sub   <- as.numeric(factor(dat_t1$workerid))
+    quant_name <- unique(dat_t1$quant)
     
-    fewer <- ifelse(grepl('Fewer', dat$qq), 1, 0)
-    more  <- ifelse(grepl('More', dat$qq), 1, 0)
-    many  <- ifelse(grepl('Many', dat$qq), 1, 0)
-    most  <- ifelse(grepl('Most', dat$qq), 1, 0)
-    few   <- ifelse(grepl('Few$', dat$qq), 1, 0)
-    
-    standat <- list(D = D, N = N, I = I, T=Time, quant_name = quant_name,
-                    cperc = cperc, sub = sub,
-                    fewer = fewer, more = more,
-                    many = many, most = most,
-                    few = few) 
+    standat <- list(D = D, N = N, I = I, quant_name = quant_name,
+                    cperc = cperc, sub = sub) 
     
     if(!prior) standat[['y']] <- y
     
   } else {
     
-    D     <- length(levels(dat_t1$qq))
+    D     <- length(unique(dat_t1$qq))
     I     <- length(unique(dat_t1$workerid))
     Time  <- 2
-    quant_name <- levels(dat_t1$qq)
+    quant_name <- unique(dat_t1$qq)
     
     N_t1   <- nrow(dat_t1)
     N_t2   <- nrow(dat_t2)
@@ -45,26 +35,10 @@ getDat <- function(dat_t1, dat_t2 = NULL, prior = FALSE){
     cperc_t1 <- (dat_t1$percent - 50) / 100
     cperc_t2 <- (dat_t2$percent - 50) / 100
     
-    fewer_t1 <- ifelse(grepl('Fewer', dat_t1$qq), 1, 0)
-    fewer_t2 <- ifelse(grepl('Fewer', dat_t2$qq), 1, 0)
-    more_t1  <- ifelse(grepl('More', dat_t1$qq), 1, 0)
-    more_t2  <- ifelse(grepl('More', dat_t2$qq), 1, 0)
-    many_t1  <- ifelse(grepl('Many', dat_t1$qq), 1, 0)
-    many_t2  <- ifelse(grepl('Many', dat_t2$qq), 1, 0)
-    most_t1  <- ifelse(grepl('Most', dat_t1$qq), 1, 0)
-    most_t2  <- ifelse(grepl('Most', dat_t2$qq), 1, 0)
-    few_t1   <- ifelse(grepl('Few$', dat_t1$qq), 1, 0)
-    few_t2   <- ifelse(grepl('Few$', dat_t2$qq), 1, 0)
-    
     standat <- list(D = D, I = I, T=Time, quant_name = quant_name,
                     cperc_t1 = cperc_t1, cperc_t2 = cperc_t2,
                     N_t1 = N_t1, N_t2 = N_t2, 
-                    sub_t1 = sub_t1, sub_t2 = sub_t2,
-                    fewer_t1 = fewer_t1, fewer_t2 = fewer_t2,
-                    more_t1 = more_t1, more_t2 = more_t2,
-                    many_t1 = many_t1, many_t2 = many_t2,
-                    most_t1 = most_t1, most_t2 = most_t2,
-                    few_t1 = few_t1, few_t2 = few_t2) 
+                    sub_t1 = sub_t1, sub_t2 = sub_t2) 
     
     if(!prior) {
       standat[['y_t1']] <- y_t1
@@ -78,27 +52,14 @@ getDat <- function(dat_t1, dat_t2 = NULL, prior = FALSE){
 }
 
 myRunner <- function(standat, iter = 1000, warmup = 400, 
-                     mod, nchains = 4,prior = FALSE, addparams = NULL,...){
-
-  if(prior) {
-    
-    parameters_to_monitor <- c("delta", "nu", "beta", "alpha", "gamma", 
-                               "sigma", "sigmaalpha", "eta", "mug", "y_postpred",
-                               addparams)
-    
-  } else {
-    
-    parameters_to_monitor <- c("deltaprior", "nuprior", "betaprior", "alphaprior", "gammaprior", 
-                               "sigmaprior", "sigmaalphaprior", "y_pred", addparams)
-    
-  }
+                     mod, nchains = 4, ncores = 2, addparams = NULL,...){
   
-  fit <- sampling(mod, verbose=T,
+  fit <- rstan::sampling(mod, verbose=T,
                   data   = standat, 
                   iter   = iter,
                   warmup = warmup,
                   chains = nchains,
-                  cores  = nchains,
+                  cores  = ncores,
                   pars   = 
                   , ...)
   return(fit)}
