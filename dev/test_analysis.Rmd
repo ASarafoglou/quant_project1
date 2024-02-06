@@ -1,0 +1,1329 @@
+---
+title: "test_analysis"
+author: "AlexandraSarafoglou"
+date: "2023-03-28"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r load-packages-and-functions, message=FALSE}
+rm(list=ls())
+library("rstan")
+library("mvtnorm") 
+library("papaja")
+library("dplyr")
+library("stringr")
+library("magrittr")
+library("LaplacesDemon")
+library("RColorBrewer")
+library("logspline")
+
+# helper functions
+source('../helper_functions/helpers.R')
+source('../helper_functions/init_and_run_short.R')
+source('../helper_functions/coorporate_design.R')
+```
+
+```{r read-data}
+# fit the model to each quantifier individually
+dat_t1    <- read.csv('../data/exp1-preprocessed-all.csv', header = TRUE)
+# make quantifiers identifiable: keep only first word so it matches quant
+dat_t1$quant <- stringr::word(dat_t1$quant, 1)
+
+nsubjs     <- length(unique(dat_t1$workerid))
+nsim       <- 5
+nrobust    <- 3
+niter      <- 10005
+nwarmup    <- 5000
+nchains    <- 5
+```
+
+```{r initialize_thresholds_and_scaling, echo=FALSE}
+# 1 = FewerThanHalf
+# 2 = MoreThanHalf
+# 3 = Few
+# 4 = Most
+# 5 = Many
+mu_b_mean   <- c(0, 0, 0.2, 0.2, -0.2)
+# since the data are flipped, mu_beta for few is centered at 0.2 and for many it is centered at -0.2
+quant       <- c('Fewer', 'More', 'Few', 'Most', 'Many')
+# robustness test: narrow (1/2*sigma). wide (2*sigma)
+scaling      <- 1
+```
+
+# Descriptive pattern
+
+This are the group-level responses for each quantifier. Note that we have flipped responses for quantifiers 'Fewer than half' and 'Few'. We also flipped and mirrored the responses for quantifier 'Many'. These transformations ensure that the meaning thresholds and the side of the vagueness are equal.
+
+```{r descriptives, echo=FALSE}
+prop <- tapply(dat_t1$resp, list(dat_t1$percent, dat_t1$qq), mean, na.rm = T)
+matplot(as.numeric(rownames(prop)), prop
+        , col = quant_colors, type='l', lwd = 2, lty=1
+        , xlab = "Presented proportion", ylab = "Proportion 'true' responses"
+        , frame.plot = F, las = 1
+        , ylim = c(0, 1.1))
+abline(v = 50, lwd = 1.5, col = my_gray1, lty=3)
+abline(h = .50, lwd = 1.5, col = my_gray1, lty=3)
+legend(5, 1, legend = quant, fill = quant_colors, bg = "white", box.col = "white")
+```
+
+# Model predictions
+
+```{r model-predictions, echo = FALSE}
+cperc <- seq(-0.5, 0.5, length.out = 1e3)
+
+plot(cperc, modelPredictions(alpha = exp(-6), 
+                             beta = 0, 
+                             gamma = 0.1, 
+                             cperc),
+     type = 'l',
+     lwd = 2,
+     las = 1, xaxt = "n",
+     bty = 'n',
+     xlab = 'Presented Proportion',
+     ylab = "Proportion 'true' responses",
+     xlim = c(-0.5, 0.5),
+     ylim = c(0, 1),
+     lty = 3,
+     col = "#101214")
+axis(side=1, at=c(-0.5, -0.3, -0.1, 0.1, 0.3, 0.5), labels=c(0, 20, 40, 60, 80, 100))
+lines(cperc, modelPredictions(alpha = exp(-1), beta = 0, gamma = 0.1, cperc),
+      col = "#FFE2BD",
+      lwd = 2)
+lines(cperc, modelPredictions(alpha = exp(-2), beta = 0, gamma = 0.1, cperc),
+      col= "#FAA53D",
+      lwd = 2)
+lines(cperc, modelPredictions(alpha = exp(-3), beta = 0, gamma = 0.1, cperc),
+      col = "#974F0C",
+      lwd = 2)
+lines(cperc, modelPredictions(alpha = exp(-4), beta = 0, gamma = 0.1, cperc),
+      col = "#7A6142",
+      lwd = 2)
+legend('topleft',
+       legend=c('-6 / .002', '-4 / .018', '-3 / .050', '-2 / .135', '-1 / .368'),
+       col=c("#101214", "#7A6142", "#974F0C", "#FAA53D", "#FFE2BD"),
+       lty = c(3, 1, 1, 1, 1, 1),
+       lwd = 2, bty = 'n',
+       title = expression(paste(' ', log(alpha),' & ', alpha,' values:')))
+```
+
+
+# Model comparison
+
+## Research questions and hypotheses
+
+In our reanalysis we seek to answer the following research questions:
+
+
+1. Are there differences in vagueness on the group and individual level? 
+2. Can we determine an order of response error rate for quantifiers?
+3. Are meaning boundaries stable over time?
+
+Based on these research questions we derive the following hypotheses:
+
+1. Vagueness hypotheses:
+  + Hypothesis 1.1: At the group level, the quantifiers with vague meaning boundaries _few_, _many_, and _most_ exhibit greater vagueness compared to sharp-meaning quantifiers _fewer than half_ and _more than half_. The alternative model lets all parameters free to vary.  
+  +  Hypothesis 1.2: A model which estimates individual-level vagueness will outperform the alternative model which assumes no vagueness for each individual. All quantifiers will be tested individually.
+
+2. Response error hypotheses:  
+  + Hypothesis 2.1: On the group-level, the order of response error rate (from least error rate to most error rate) is: _more than half_ < ( _many_, _most_) < _fewer than half_ < _few_, corresponding to an interaction between the vagueness of the meaning boundary and entailment of the quantifier. The alternative model lets all parameters free to vary. 
+  + Hypothesis 2.2: The main effect of quantifier monotonicity. On the group-level, the order of response error rate (from least error rate to most error rate) is: ( _more than half_, _many_, _most_) < ( _fewer than half_, _few_). The alternative model lets all parameters free to vary.
+  + Hypothesis 2.3: The main effect of sharp versus vague meaning boundaries. On the group-level, the order of response error rate (from least error rate to most error rate) is: ( _more than half_, _fewer than half_) < ( _many_, _most_, _few_). The alternative model lets all parameters free to vary.
+
+Additionally we will test the following hypothesis in the real analysis but are unable to test it for this dataset:
+
+3. Stability over time: 
+  + Hypothesis 3.1: At the individual-level the thresholds and response noise for all quantifiers are stable over time. The alternative model estimates the thresholds and response noise per time point connected with a covariance structure. Each quantifier will be tested separately.
+  + Hypothesis 3.2: The ordering of the meaning thresholds within a participant are stable over time. The alternative model lets all parameters free to vary. Each individual will be tested separately.
+
+## Bayes factors
+
+We use Bayes factors for model comparison. Bayes factors are directly interpretable as strength of evidence, so no criterion is needed. One could consider Bayes factors larger than 10 in favour for or against the hypothesis of interest as _compelling evidence_.
+
+In order to ensure computational robustness in our findings, we will perform multiple computations of the Bayes factor and present the mean and ranges of the results. Specifically, for the main research questions and the specified statistical model, we will calculate the Bayes factor 5 times with new samples from the posterior and new samples from the marginal likelihood. Additionally, for the robustness analysis described below, we will compute the Bayes factors 3 times. 
+
+### Hypotheses 1.1, 2.1, 2.2, and 2.3
+
+We use the unconditional encompassing approach to compute the Bayes factors for hypotheses 1.1, 2.1, 2.2, 2.3, and 3.2. We also use bridge sampling to assess hypothesis 1.2 and 3.1.
+For that we need to sample from the prior and posterior distribution of the encompassing model (Model 3).
+
+```{r compute-bf-quantities-prior, eval = FALSE, echo = FALSE}
+# make sure you loaded the correct dataset: "/exp1-preprocessed-all.csv"
+# make sure you load the correct model: "model3_prior"
+filename   <- "model3_prior.stan"
+model_list <- rstan::stan_model(file = paste0('../models/', filename))
+set.seed(4491)
+
+for(j in 1:nsim){
+  
+  samples_processed <- list()
+  ndivergent        <- rep(20, length(quant))
+  
+  for(d in 1:length(quant)){
+    
+  while(ndivergent[d] > 10){
+    dat              <- dat_t1[grepl(paste0(quant[d], '$'), dat_t1$quant), ] 
+    predat           <- getDat(dat, prior = FALSE)
+    predat$mu_b_mean <- mu_b_mean[d]
+    predat$scaling   <- scaling
+    
+    logmodfit <- myRunner(predat
+                          , mod = model_list
+                          , iter = niter
+                          , ncores = nchains
+                          , warmup = nwarmup
+                          , control = list(adapt_delta = .99, max_treedepth = 17)
+                          , nchains = nchains)
+    
+    ndivergent[d]          <- rstan::get_num_divergent(logmodfit)
+    }
+    
+    samples_processed[[d]] <- removeDivergentTransitions(logmodfit, nchains = nchains)
+  }
+
+  # in case there are divergent transitions: equalize the number of samples 
+  # (max 10 divergent transitions)
+  samples_processed <- lapply(samples_processed, function(x) x[1:((niter-nwarmup)*nchains - 10), ])
+
+  # hypothesis 1.1: At the group level, the quantifiers with vague meaning 
+  # boundaries "few", "many" and "most" exhibit greater vagueness compared to sharp-meaning 
+  # quantifiers "fewer than half" and "more than half". 
+  # ("fewer than half", "more than half") < ("many", "most", "few") 
+  # Note: parameters must be ordered from small to large
+  proportion_h1_1 <- .evaluateHypotheses(Hr         = c('[1|2][1|2][3|4|5][3|4|5][3|4|5]'),
+                                       samples    = samples_processed, 
+                                       param_name = 'mu_log_a')
+  
+  # hypothesis 1.2: will be conducted via bridge sampling
+
+  # hypothesis 2.1: On the group-level, the order of response error rate (from least 
+  # error rate to most error rate) is: 
+  # "more than half" < ("many", "most") < "fewer than half" < "few" 
+  # Note: parameters must be ordered from small to large
+  proportion_h2_1 <- .evaluateHypotheses(Hr       = c('2[4|5][4|5]13'),
+                                       samples    = samples_processed, 
+                                       param_name = 'mu_g')
+  # hypothesis 2.2: The main effect of quantifier monotonicity. On the 
+  # group-level, the order of response error rate (from least error rate to most 
+  # error rate) is: ("more than half", "many", "most") < ("fewer than half", "few"). 
+  # The alternative model lets all parameters free to vary
+  # Note: parameters must be ordered from small to large
+  proportion_h2_2 <- .evaluateHypotheses(Hr       = c('[2|4|5][2|4|5][2|4|5][1|3][1|3]'),
+                                       samples    = samples_processed, 
+                                       param_name = 'mu_g')
+  # hypothesis 2.3: The main effect of sharp versus vague meaning boundaries. On the 
+  # group-level, the order of response error rate (from least error rate to most 
+  # error rate) is: ("more than half", "fewer than half") < ("many", "most", "few"). 
+  # The alternative model lets all parameters free to vary
+  # Note: parameters must be ordered from small to large 
+  proportion_h2_3 <- .evaluateHypotheses(Hr       = c('[1|2][1|2][3|4|5][3|4|5][3|4|5]'),
+                                       samples    = samples_processed, 
+                                       param_name = 'mu_g')
+  
+  # Hypotheses 3.1 and 3.2 cannot be tested on t=1 data
+  
+  # export prior results
+  write.csv2(proportion_h1_1, paste0('../output/test_analysis_h1_1_prior_', j, '.csv'), row.names = FALSE)
+  write.csv2(proportion_h2_1, paste0('../output/test_analysis_h2_1_prior_', j, '.csv'), row.names = FALSE)
+  write.csv2(proportion_h2_2, paste0('../output/test_analysis_h2_2_prior_', j, '.csv'), row.names = FALSE)
+  write.csv2(proportion_h2_3, paste0('../output/test_analysis_h2_3_prior_', j, '.csv'), row.names = FALSE)
+  rm(samples_processed, proportion_h1_1, proportion_h2_1, proportion_h2_2, proportion_h2_3)
+  rm(logmodfit)
+}
+```
+
+```{r compute-bf-quantities-post, eval = FALSE, echo = FALSE}
+# make sure you loaded the correct dataset: "/exp1-preprocessed-all.csv"
+# make sure you load the correct model: "model3_post.stan"
+filename   <- "model3_post.stan"
+model_list <- rstan::stan_model(file = paste0('../models/', filename))
+
+set.seed(4491)
+for(j in 1:nsim){
+  
+  ndivergent        <- rep(20, length(quant))
+  samples_processed <- list()
+  results_m3_h1_2   <- data.frame(logml=NA, error=NA)
+  
+  for(d in 1:length(quant)){
+    
+  while(ndivergent[d] > 10){
+    dat              <- dat_t1[grepl(paste0(quant[d], '$'), dat_t1$quant), ] 
+    predat           <- getDat(dat, prior = FALSE)
+    predat$mu_b_mean <- mu_b_mean[d]
+    predat$scaling   <- scaling
+    
+    logmodfit <- myRunner(predat
+                          , mod = model_list
+                          , iter = niter*3 # check if relative mean square error improves with more samples
+                          , ncores = nchains
+                          , warmup = nwarmup
+                          , control = list(adapt_delta = .99, max_treedepth = 17)
+                          , nchains = nchains)
+    
+    ndivergent[d] <- rstan::get_num_divergent(logmodfit)
+  }  
+    
+    samples_processed[[d]] <- removeDivergentTransitions(logmodfit, nchains = nchains)
+    # hypothesis 1.2: will be conducted via bridge sampling
+    logml_m3_h1_2   <- bridgesampling::bridge_sampler(logmodfit)
+    error_m3_h1_2   <- bridgesampling::error_measures(logml_m3_h1_2)$percentage
+    results_m3_h1_2[d,] <- data.frame(logml=logml_m3_h1_2$logml, error=error_m3_h1_2)
+   
+  }
+  
+  # in case there are divergent transitions: equalize the number of samples 
+  # (max 5 divergent transitions per chain)
+  samples_processed <- lapply(samples_processed, function(x) x[1:((niter-nwarmup)*nchains - (5*nchains)), ])
+
+  # hypothesis 1.1: At the group level, the quantifiers with vague meaning 
+  # boundaries "few", "many" and "most" exhibit greater vagueness compared to sharp-meaning 
+  # quantifiers "fewer than half" and "more than half". 
+  # ("fewer than half", "more than half") < ("many", "most", "few") 
+  # Note: parameters must be ordered from small to large
+  proportion_h1_1 <- .evaluateHypotheses(Hr         = c('[1|2][1|2][3|4|5][3|4|5][3|4|5]'),
+                                       samples    = samples_processed, 
+                                       param_name = 'mu_log_a')
+  
+  # hypothesis 1.2: will be conducted via bridge sampling
+  logml_m3_h1_2   <- bridgesampling::bridge_sampler(logmodfit)
+  error_m3_h1_2   <- bridgesampling::error_measures(logml_m3_h1_2)$percentage
+  results_m3_h1_2 <- data.frame(logml=logml_m3_h1_2$logml, error=error_m3_h1_2)
+
+  # hypothesis 2.1: On the group-level, the order of response error rate (from least 
+  # error rate to most error rate) is: 
+  # "more than half" < ("many", "most") < "fewer than half" < "few" 
+  # Note: parameters must be ordered from small to large
+  proportion_h2_1 <- .evaluateHypotheses(Hr         = c('2[4|5][4|5]13'),
+                                       samples    = samples_processed, 
+                                       param_name = 'mu_g')
+  # hypothesis 2.2: The main effect of quantifier monotonicity. On the 
+  # group-level, the order of response error rate (from least error rate to most 
+  # error rate) is: ("more than half", "many", "most") < ("fewer than half", "few"). 
+  # The alternative model lets all parameters free to vary
+  # Note: parameters must be ordered from small to large
+  proportion_h2_2 <- .evaluateHypotheses(Hr       = c('[2|4|5][2|4|5][2|4|5][1|3][1|3]'),
+                                         samples    = samples_processed, 
+                                         param_name = 'mu_g')
+  # hypothesis 2.3: The main effect of sharp versus vague meaning boundaries. On the 
+  # group-level, the order of response error rate (from least error rate to most 
+  # error rate) is: ("more than half", "fewer than half") < ("many", "most", "few"). 
+  # The alternative model lets all parameters free to vary
+  # Note: parameters must be ordered from small to large 
+  proportion_h2_3 <- .evaluateHypotheses(Hr       = c('[1|2][1|2][3|4|5][3|4|5][3|4|5]'),
+                                       samples    = samples_processed, 
+                                       param_name = 'mu_g')
+  
+  # Hypotheses 3.1 and 3.2 cannot be tested on t=1 data
+  
+  # export posterior results
+  write.csv2(proportion_h1_1, paste0('../output/test_analysis_h1_1_post_', j, '.csv'), row.names = FALSE)
+  write.csv2(results_m3_h1_2, paste0('../output/test_analysis_h1_2_m3_'  , j, '.csv'), row.names = FALSE)
+  write.csv2(proportion_h2_1, paste0('../output/test_analysis_h2_1_post_', j, '.csv'), row.names = FALSE)
+  write.csv2(proportion_h2_2, paste0('../output/test_analysis_h2_2_post_', j, '.csv'), row.names = FALSE)
+  write.csv2(proportion_h2_3, paste0('../output/test_analysis_h2_3_post_', j, '.csv'), row.names = FALSE)
+  rm(samples_processed, proportion_h1_1, proportion_h2_1, proportion_h2_2, proportion_h2_3,
+     logml_m3_h1_2, error_m3_h1_2, results_m3_h1_2)
+  rm(logmodfit)
+}
+
+```
+
+### Hypotheses 1.2
+
+We use the bridge sampling compute the Bayes factors for hypothesis 1.2.
+
+```{r bridge-sampling, eval = FALSE, echo = FALSE}
+# make sure you loaded the correct dataset: "/exp1-preprocessed-all.csv"
+# make sure you load the correct model: "model4_post.stan"
+filename   <- "model4_post.stan"
+model_list <- rstan::stan_model(file = paste0('../models/', filename))
+
+set.seed(2023)
+for(j in 1:nsim){
+  
+  ndivergent        <- rep(20, length(quant))
+  samples_processed <- list()
+  results_m4_h1_2   <- data.frame(logml=NA, error=NA)
+  
+for(d in 1:length(quant)){
+    
+  while(ndivergent[d] > 10){
+    dat              <- dat_t1[grepl(paste0(quant[d], '$'), dat_t1$quant), ] 
+    predat           <- getDat(dat, prior = FALSE)
+    predat$mu_b_mean <- mu_b_mean[d]
+    predat$scaling   <- scaling
+    
+    logmodfit <- myRunner(predat
+                          , mod     = model_list
+                          , iter    = niter*3
+                          , ncores  = nchains
+                          , warmup  = nwarmup
+                          , control = list(adapt_delta = .99, max_treedepth = 17)
+                          , nchains = nchains)
+    
+    ndivergent[d] <- rstan::get_num_divergent(logmodfit)
+  }  
+    
+  # Hypothesis 1.2: will be conducted via bridge sampling
+  logml_m4_h1_2   <- bridgesampling::bridge_sampler(logmodfit)
+  error_m4_h1_2   <- bridgesampling::error_measures(logml_m4_h1_2)$percentage
+  results_m4_h1_2[d,] <- c(logml=logml_m4_h1_2$logml, error=error_m4_h1_2)
+  }
+  # export posterior results
+  write.csv2(results_m4_h1_2, 
+             paste0('../output/test_analysis_h1_2_m4_', j, '.csv'), row.names = FALSE)
+  rm(logml_m4_h1_2, error_m4_h1_2,results_m4_h1_2, logmodfit)
+}
+
+# samples_processed <- removeDivergentTransitions(logmodfit, nchains = nchains)
+# 
+# ## check parameter estimates
+#   var_names <- colnames(samples_processed)[!grepl('pred', colnames(samples_processed)) & 
+#                                            !grepl('lp__', colnames(samples_processed))]
+#   samples_pars <- samples_processed[, var_names]
+#   mu_prior     <- apply(samples_pars, 2, mean)  
+#   
+# ## plot model predictions
+#   pred_names      <- colnames(samples_processed)[grepl('y_pred', colnames(samples_processed))]
+#   pred_responses  <- samples_processed[sample(1:niter, 10), pred_names]
+#   percent_cat     <- cut(dat$percent, breaks=seq(0, 100, by=10), labels =FALSE)
+#     
+#   for(i in 1:nrow(pred_responses)){
+#     
+#     prop           <- tapply(pred_responses[i,], list(percent_cat), mean, na.rm = T)
+#     
+#     if(i ==1){
+#       
+#           matplot(as.numeric(rownames(prop)), prop
+#           , col = 'grey36', type='l', 
+#           , xlab = "Presented proportion", ylab = "Proportion 'true' responses"
+#           , frame.plot = F, las = 1
+#           , ylim = c(0, 1.1))
+#       
+#     } else {
+#       
+#       lines(as.numeric(rownames(prop)), prop,
+#       col = "#101214")
+#       
+#     }
+#     
+#   }
+```
+
+## Robustness Tests
+
+We consider a result to be robust, if the qualitative conclusions do not drastically change across a range of different prior specifications. For our robustness tests we focus on the group-level distributions of the main model parameters, that is the group-level thresholds, vagueness, and response noise. For these parameters we will vary the width of the group-level mean (i.e., increase or decrease the range of plausible parameter values) and the width of the group-level variance (i.e., increase or decrease the homogeneity of participants). The width of the group-level mean and variance will be varied in two levels: narrow (1/2 * sigma), wide (2 * sigma).
+
+```{r scaling-setup}
+scaling      <- c(0.5, 2)
+nscale       <- length(scaling)
+```
+
+```{r compute-bf-quantities-prior-robust, eval = FALSE, echo = FALSE}
+# make sure you loaded the correct dataset: "/exp1-preprocessed-all.csv"
+# make sure you load the correct model: "model3_prior"
+filename   <- "model3_prior.stan"
+model_list <- rstan::stan_model(file = paste0('../models/', filename))
+set.seed(4491)
+
+for(j in 1:nrobust){
+  for(k in 1:nscale){
+    
+  samples_processed <- list()
+  ndivergent        <- rep(20, length(quant))
+  
+  for(d in 1:length(quant)){
+    
+  while(ndivergent[d] > 10){
+    dat              <- dat_t1[grepl(paste0(quant[d], '$'), dat_t1$quant), ] 
+    predat           <- getDat(dat, prior = FALSE)
+    predat$mu_b_mean <- mu_b_mean[d]
+    predat$scaling   <- scaling[k]
+    
+    logmodfit <- myRunner(predat
+                          , mod = model_list
+                          , iter = niter
+                          , ncores = nchains
+                          , warmup = nwarmup
+                          , control = list(adapt_delta = .99, max_treedepth = 17)
+                          , nchains = nchains)
+    
+    ndivergent[d]          <- rstan::get_num_divergent(logmodfit)
+    }
+    
+    samples_processed[[d]] <- removeDivergentTransitions(logmodfit, nchains = nchains)
+  }
+
+  # in case there are divergent transitions: equalize the number of samples 
+  # (max 10 divergent transitions)
+  samples_processed <- lapply(samples_processed, function(x) x[1:((niter-nwarmup)*nchains - 10), ])
+
+  # hypothesis 1.1: At the group level, the quantifiers with vague meaning 
+  # boundaries "few", "many" and "most" exhibit greater vagueness compared to sharp-meaning 
+  # quantifiers "fewer than half" and "more than half". 
+  # ("fewer than half", "more than half") < ("many", "most", "few") 
+  # Note: parameters must be ordered from small to large
+  proportion_h1_1 <- .evaluateHypotheses(Hr         = c('[1|2][1|2][3|4|5][3|4|5][3|4|5]'),
+                                         samples    = samples_processed, 
+                                         param_name = 'mu_log_a')
+  
+  # hypothesis 1.2: will be conducted via bridge sampling
+
+  # hypothesis 2.1: On the group-level, the order of response error rate (from least 
+  # error rate to most error rate) is: 
+  # "more than half" < ("many", "most") < "fewer than half" < "few" 
+  # Note: parameters must be ordered from small to large
+  proportion_h2_1 <- .evaluateHypotheses(Hr       = c('2[4|5][4|5]13'),
+                                         samples    = samples_processed, 
+                                         param_name = 'mu_g')
+  # hypothesis 2.2: The main effect of quantifier monotonicity. On the 
+  # group-level, the order of response error rate (from least error rate to most 
+  # error rate) is: ("more than half", "many", "most") < ("fewer than half", "few"). 
+  # The alternative model lets all parameters free to vary
+  # Note: parameters must be ordered from small to large
+  proportion_h2_2 <- .evaluateHypotheses(Hr       = c('[2|4|5][2|4|5][2|4|5][1|3][1|3]'),
+                                         samples    = samples_processed, 
+                                         param_name = 'mu_g')
+  # hypothesis 2.3: The main effect of sharp versus vague meaning boundaries. On the 
+  # group-level, the order of response error rate (from least error rate to most 
+  # error rate) is: ("more than half", "fewer than half") < ("many", "most", "few"). 
+  # The alternative model lets all parameters free to vary
+  # Note: parameters must be ordered from small to large 
+  proportion_h2_3 <- .evaluateHypotheses(Hr       = c('[1|2][1|2][3|4|5][3|4|5][3|4|5]'),
+                                         samples    = samples_processed, 
+                                         param_name = 'mu_g')
+  
+  # Hypotheses 3.1 and 3.2 cannot be tested on t=1 data
+  
+  # export prior results
+  write.csv2(proportion_h1_1, paste0('../output/test_analysis_h1_1_prior_', 
+                                     k, '_', j, '_robust.csv'), row.names = FALSE)
+  write.csv2(proportion_h2_1, paste0('../output/test_analysis_h2_1_prior_',
+                                     k, '_', j, '_robust.csv'), row.names = FALSE)
+  write.csv2(proportion_h2_2, paste0('../output/test_analysis_h2_2_prior_', 
+                                     k, '_', j, '_robust.csv'), row.names = FALSE)
+  write.csv2(proportion_h2_3, paste0('../output/test_analysis_h2_3_prior_', 
+                                     k, '_', j, '_robust.csv'), row.names = FALSE)
+  rm(samples_processed, proportion_h1_1, proportion_h2_1, proportion_h2_2, proportion_h2_3)
+  rm(logmodfit)
+  }
+}
+```
+
+```{r compute-bf-quantities-post-robust, eval = FALSE, echo = FALSE}
+# make sure you loaded the correct dataset: "/exp1-preprocessed-all.csv"
+# make sure you load the correct model: "model3_post.stan"
+filename   <- "model3_post.stan"
+model_list <- rstan::stan_model(file = paste0('../models/', filename))
+
+set.seed(4491)
+for(j in 1:nrobust){
+  for(k in 1:nscale){
+  
+  ndivergent        <- rep(20, length(quant))
+  samples_processed <- list()
+  results_m3_h1_2   <- data.frame(logml=NA, error=NA)
+  
+  for(d in 1:length(quant)){
+    
+  while(ndivergent[d] > 10){
+    dat              <- dat_t1[grepl(paste0(quant[d], '$'), dat_t1$quant), ] 
+    predat           <- getDat(dat, prior = FALSE)
+    predat$mu_b_mean <- mu_b_mean[d]
+    predat$scaling   <- scaling[k]
+    
+    logmodfit <- myRunner(predat
+                          , mod = model_list
+                          , iter = niter
+                          , ncores = nchains
+                          , warmup = nwarmup
+                          , control = list(adapt_delta = .99, max_treedepth = 17)
+                          , nchains = nchains)
+    
+    ndivergent[d] <- rstan::get_num_divergent(logmodfit)
+  }  
+    
+    samples_processed[[d]] <- removeDivergentTransitions(logmodfit, nchains = nchains)
+    
+  # hypothesis 1.2: will be conducted via bridge sampling
+  logml_m3_h1_2   <- bridgesampling::bridge_sampler(logmodfit)
+  error_m3_h1_2   <- bridgesampling::error_measures(logml_m3_h1_2)$percentage
+  results_m3_h1_2[d,] <- data.frame(logml=logml_m3_h1_2$logml, error=error_m3_h1_2)
+    
+  }
+  
+  # in case there are divergent transitions: equalize the number of samples 
+  # (max 5 divergent transitions per chain)
+  samples_processed <- lapply(samples_processed, function(x) x[1:((niter-nwarmup)*nchains - (5*nchains)), ])
+
+  # hypothesis 1.1: At the group level, the quantifiers with vague meaning 
+  # boundaries "few", "many" and "most" exhibit greater vagueness compared to sharp-meaning 
+  # quantifiers "fewer than half" and "more than half". 
+  # ("fewer than half", "more than half") < ("many", "most", "few") 
+  # Note: parameters must be ordered from small to large
+  proportion_h1_1 <- .evaluateHypotheses(Hr         = c('[1|2][1|2][3|4|5][3|4|5][3|4|5]'),
+                                       samples    = samples_processed, 
+                                       param_name = 'mu_log_a')
+  
+
+
+  # hypothesis 2.1: On the group-level, the order of response error rate (from least 
+  # error rate to most error rate) is: 
+  # "more than half" < ("many", "most") < "fewer than half" < "few" 
+  # Note: parameters must be ordered from small to large
+  proportion_h2_1 <- .evaluateHypotheses(Hr         = c('2[4|5][4|5]13'),
+                                       samples    = samples_processed, 
+                                       param_name = 'mu_g')
+  # hypothesis 2.2: The main effect of quantifier monotonicity. On the 
+  # group-level, the order of response error rate (from least error rate to most 
+  # error rate) is: ("more than half", "many", "most") < ("fewer than half", "few"). 
+  # The alternative model lets all parameters free to vary
+  # Note: parameters must be ordered from small to large
+  proportion_h2_2 <- .evaluateHypotheses(Hr       = c('[2|4|5][2|4|5][2|4|5][1|3][1|3]'),
+                                         samples    = samples_processed, 
+                                         param_name = 'mu_g')
+  # hypothesis 2.3: The main effect of sharp versus vague meaning boundaries. On the 
+  # group-level, the order of response error rate (from least error rate to most 
+  # error rate) is: ("more than half", "fewer than half") < ("many", "most", "few"). 
+  # The alternative model lets all parameters free to vary
+  # Note: parameters must be ordered from small to large 
+  proportion_h2_3 <- .evaluateHypotheses(Hr       = c('[1|2][1|2][3|4|5][3|4|5][3|4|5]'),
+                                       samples    = samples_processed, 
+                                       param_name = 'mu_g')
+  
+  # Hypotheses 3.1 and 3.2 cannot be tested on t=1 data
+  
+  # export posterior results
+  write.csv2(proportion_h1_1, paste0('../output/test_analysis_h1_1_post_',
+                                     k, '_', j, '_robust.csv'), row.names = FALSE)
+  write.csv2(results_m3_h1_2, paste0('../output/test_analysis_h1_2_m3_',
+                                     k, '_', j, '_robust.csv'), row.names = FALSE)
+  write.csv2(proportion_h2_1, paste0('../output/test_analysis_h2_1_post_',
+                                     k, '_', j, '_robust.csv'), row.names = FALSE)
+  write.csv2(proportion_h2_2, paste0('../output/test_analysis_h2_2_post_',
+                                     k, '_', j, '_robust.csv'), row.names = FALSE)
+  write.csv2(proportion_h2_3, paste0('../output/test_analysis_h2_3_post_',
+                                     k, '_', j, '_robust.csv'), row.names = FALSE)
+  rm(samples_processed, proportion_h1_1, proportion_h2_1, proportion_h2_2, proportion_h2_3,
+     logml_m3_h1_2, error_m3_h1_2, results_m3_h1_2)
+  rm(logmodfit)
+  }
+}
+
+```
+
+```{r compute-bf-quantities-post-robust-model4, eval = FALSE, echo = FALSE}
+filename   <- "model4_post.stan"
+model_list <- rstan::stan_model(file = paste0('../models/', filename))
+
+set.seed(4491)
+for(j in 1:nrobust){
+  for(k in 1:nscale){
+    
+    ndivergent        <- rep(20, length(quant))
+    samples_processed <- list()
+    results_m4_h1_2   <- data.frame(logml=NA, error=NA)
+    
+    for(d in 1:length(quant)){
+      
+      while(ndivergent[d] > 10){
+        dat              <- dat_t1[grepl(paste0(quant[d], '$'), dat_t1$quant), ] 
+        predat           <- getDat(dat, prior = FALSE)
+        predat$mu_b_mean <- mu_b_mean[d]
+        predat$scaling   <- scaling[k]
+        
+        logmodfit <- myRunner(predat
+                              , mod = model_list
+                              , iter = niter
+                              , ncores = nchains
+                              , warmup = nwarmup
+                              , control = list(adapt_delta = .99, max_treedepth = 17)
+                              , nchains = nchains)
+        
+        ndivergent[d] <- rstan::get_num_divergent(logmodfit)
+      }  
+      
+      samples_processed[[d]] <- removeDivergentTransitions(logmodfit, nchains = nchains)
+      
+      # hypothesis 1.2: will be conducted via bridge sampling
+      logml_m4_h1_2   <- bridgesampling::bridge_sampler(logmodfit)
+      error_m4_h1_2   <- bridgesampling::error_measures(logml_m4_h1_2)$percentage
+      results_m4_h1_2[d,] <- data.frame(logml=logml_m4_h1_2$logml, error=error_m4_h1_2)
+      
+    }
+    # export posterior results
+    write.csv2(results_m4_h1_2, paste0('../output/test_analysis_h1_2_m4_',
+                                       k, '_', j, '_robust.csv'), row.names = FALSE)
+    rm(logml_m4_h1_2, error_m4_h1_2,results_m4_h1_2, logmodfit)
+  }
+}
+```
+
+
+# Parameter Estimation
+
+Requires to double flip the data so the vagueness is where we expect it to be (above the threshold). This is crucial to avoid model misfit.
+
+```{r run-model-prior, eval = FALSE, echo = FALSE}
+# make sure you loaded the correct dataset: "/exp1-preprocessed-all.csv"
+# make sure you load the correct model: "model3_prior.stan"
+filename   <- "model3_prior.stan"
+model_list <- rstan::stan_model(file = paste0('../models/', filename))
+
+set.seed(4491)
+for(d in 1:length(quant)){
+  
+  dat              <- dat_t1[grepl(paste0(quant[d], '$'), dat_t1$quant), ] 
+  predat           <- getDat(dat, prior = FALSE)
+  predat$mu_b_mean <- mu_b_mean[d]
+  predat$scaling   <- scaling
+  
+  logmodfit <- myRunner(predat
+                      , mod = model_list
+                      , iter = niter
+                      , ncores = nchains
+                      , warmup = nwarmup
+                      , control = list(adapt_delta = .99, max_treedepth = 17)
+                      , nchains = nchains)
+
+  # (1) remove divergent transitions and thin the chains
+  samples_processed <- removeDivergentTransitions(logmodfit, nchains = nchains)
+  samples_processed <- samples_processed[seq(from=1, to=nrow(samples_processed), by = 50),]
+  
+  # (2) compute the posterior means
+  mus  <- apply(samples_processed, 2, mean)
+  
+  # (2) export parameter values
+  write.csv2(t(as.data.frame(mus)), paste0('../output/ramotowska_t1_all_mu_prior', quant[d], '.csv'), 
+             row.names = FALSE)
+  write.csv2(samples_processed,
+             paste0('../output/ramotowska_t1_all_prior', quant[d], '.csv'),
+             row.names = FALSE)
+}
+```
+
+```{r run-model, eval = FALSE, echo = FALSE}
+# make sure you loaded the correct dataset: "/exp1-preprocessed-all.csv"
+# make sure you load the correct model: "model3_post.stan"
+filename   <- "model3_post.stan"
+model_list <- rstan::stan_model(file = paste0('../models/', filename))
+
+set.seed(4491)
+for(d in 1:length(quant)){
+  
+  dat              <- dat_t1[grepl(paste0(quant[d], '$'), dat_t1$quant), ] 
+  predat           <- getDat(dat, prior = FALSE)
+  predat$mu_b_mean <- mu_b_mean[d]
+  predat$scaling   <- scaling
+  
+  logmodfit <- myRunner(predat
+                      , mod = model_list
+                      , iter = niter
+                      , ncores = nchains
+                      , warmup = nwarmup
+                      , control = list(adapt_delta = .99, max_treedepth = 17)
+                      , nchains = nchains)
+
+  # (1) remove divergent transitions and thin the chains
+  samples_processed <- removeDivergentTransitions(logmodfit, nchains = nchains)
+  samples_processed <- samples_processed[seq(from=1, to=nrow(samples_processed), by = 50),]
+  
+  # (2) compute the posterior means
+  mus  <- apply(samples_processed, 2, mean)
+  
+  # (2) export parameter values
+  write.csv2(t(as.data.frame(mus)), paste0('../output/ramotowska_t1_all_mu_', quant[d], '.csv'), 
+             row.names = FALSE)
+  write.csv2(samples_processed,
+             paste0('../output/ramotowska_t1_all_', quant[d], '.csv'),
+             row.names = FALSE)
+}
+```
+
+# Parameter Estimation - Original Model
+
+```{r run-model-sonia, eval = FALSE, echo = FALSE}
+# make sure you loaded the correct dataset: "/exp1-preprocessed-all.csv"
+# make sure you load the correct model: "model_sonia_post.stan"
+filename   <- "model_sonia_post.stan"
+model_list <- rstan::stan_model(file = paste0('../models/', filename))
+
+set.seed(4491)
+for(d in 2:length(quant)){
+  
+  dat              <- dat_t1[grepl(paste0(quant[d], '$'), dat_t1$quant), ] 
+  predat           <- getDat(dat, prior = FALSE)
+  predat$mu_b_mean <- mu_b_mean[d]
+  predat$scaling   <- scaling
+  
+  logmodfit <- myRunner(predat
+                      , mod = model_list
+                      , iter = niter/2
+                      , ncores = nchains
+                      , warmup = nwarmup
+                      , control = list(adapt_delta = .99, max_treedepth = 17)
+                      , nchains = nchains)
+
+  # (1) remove divergent transitions and thin the chains
+  samples_processed <- removeDivergentTransitions(logmodfit, nchains = nchains)
+  #samples_processed <- samples_processed[seq(from=1, to=nrow(samples_processed), by = 50),]
+  
+  # (2) compute the posterior means
+  mus  <- apply(samples_processed, 2, mean)
+  
+  # (2) export parameter values
+  write.csv2(t(as.data.frame(mus)), paste0('../output/model_sonia_ramotowska_t1_all_mu_', quant[d], '.csv'), 
+             row.names = FALSE)
+  write.csv2(samples_processed,
+             paste0('../output/model_sonia_ramotowska_t1_all_', quant[d], '.csv'),
+             row.names = FALSE)
+}
+```
+
+
+# Assess the model fit
+
+We need to flip the data/parameters to its original form again before looking or interpreting the output. We then visualize how well the model fits the data on the group level. At the end of the document we visualize the updating from prior to posterior, and how well the model fits the data on an individual level.
+
+```{r load-prior-and-post}
+params <- c('mu_log_a', 
+            'mu_b',
+            'mu_g',
+            'sigma_mu_log_a',
+            'sigma_mu_b',
+            'sigma_mu_g')
+xaxis_labels <- c(expression(mu[paste('log(', alpha, ')')]),
+                  expression(mu[beta]),
+                  expression(mu[gamma]),
+                  expression(sigma[paste('log(', alpha, ')')]),
+                  expression(sigma[beta]),
+                  expression(sigma[gamma]))
+
+prior <- post <- list()
+for(d in 1:5){
+  prior[[d]] <- read.csv2(paste0('../output/ramotowska_t1_all_prior', quant[d], '.csv'),
+                         header = TRUE, sep =';')
+  post[[d]]  <-  read.csv2(paste0('../output/ramotowska_t1_all_', quant[d], '.csv'),
+                         header = TRUE, sep =';')
+  col     <- quant_colors[d]
+  col_out <- quant_colors_strong[d]
+  col_in  <- quant_colors_light[d]
+  
+  # backflip the parameters to their original scale
+  # 1="Fewer" 2="More"  3="Few"   4="Most"  5="Many"            
+  if(quant[d] == "Fewer" | quant[d] == "Few" | quant[d] == "Many"){
+    
+    ind_name <- colnames(prior[[d]])[grepl('b\\.', colnames(prior[[d]]))]
+    grp_name <- colnames(prior[[d]])[grepl('^mu_b', colnames(prior[[d]]))]
+    
+    prior[[d]][, c(ind_name, grp_name)] <- (-1) * prior[[d]][, c(ind_name, grp_name)]
+    post[[d]][ , c(ind_name, grp_name)] <- (-1) * post[[d]][ , c(ind_name, grp_name)]
+  } 
+}
+```
+
+## Posterior predictive on the group level
+
+```{r visualize-posterior-predictive-group, echo = FALSE}
+n_observed <- 10
+
+par(mfrow=c(2, 3), cex.lab=1)
+
+for(d in 1:5){
+  col     <- quant_colors[d]
+  col_out <- quant_colors_strong[d]
+  col_in  <- quant_colors_light[d]
+  mu      <-  read.csv2(paste0('../output/ramotowska_t1_all_mu_', quant[d], '.csv'),
+                        header = TRUE, sep =';')
+  dat     <- dat_t1[grepl(paste0(quant[d], '$'), dat_t1$quant), ] 
+  
+  # compute observed proportions
+  percent_cat <- cut(dat$percent,
+                     breaks=seq(0, 100, by=n_observed))
+  prop_observed_group <- tapply(dat$resp, percent_cat, mean, na.rm = T)
+  props_lower    <- c(seq(0, 100, length.out=n_observed+1) + 1)[-(n_observed+1)]
+  props_upper    <- c(seq(0, 100, length.out=n_observed+1))[-1]
+  cperc_observed <- (props_upper - ((props_upper - props_lower) / 2))
+  cperc_observed <- (cperc_observed - 50) / 100
+  cperc          <- seq(-0.5, 0.5, length.out = 1e3)
+
+  pi <- modelPredictions(alpha = exp(mu[colnames(mu) == 'mu_log_a']),
+                               beta  = mu[colnames(mu) == 'mu_b'],
+                               gamma = mu[colnames(mu) == 'mu_g'],
+                               cperc = cperc)
+  
+  # backflip the data to its original scale
+  # 1="Fewer" 2="More"  3="Few"   4="Most"  5="Many"            
+  if(quant[d] == "Fewer" | quant[d] == "Few"){
+    cperc          <- (-1) * cperc
+    cperc_observed <- (-1) * cperc_observed
+  } else if(quant[d] == "Many"){
+    cperc          <- (-1) * cperc
+    cperc_observed <- (-1) * cperc_observed
+    pi                  <- 1 - pi
+    prop_observed_group <- 1 - prop_observed_group
+  }
+  
+  # plot
+  plot(cperc, pi,
+       type = 'l', lwd = 3, las = 1, bty = 'n', 
+       lty = 3, col = col, cex.lab=1.2,
+       xaxt = 'n', yaxt = 'n',
+       main = quant[d], 
+       xlab = 'Presented Proportion', 
+       ylab = 'Proportion of "true" responses',
+       xlim = c(-0.5, 0.5), ylim = c(0, 1))
+  axis(side =2, at = c(0, 0.5, 1), labels = c(0, 0.5, 1), las = 1)
+  axis(side =1, at = seq(-0.5, 0.5, by = 0.2), labels = seq(0, 100, by = 20))
+points(cperc_observed, prop_observed_group, pch = 24, lwd = 2, col=col_out, bg=col_in)
+}
+```
+
+In general, the model seems to fit the data quite well. There is some misfit for the quantifier _few_ and _many_. On the group-level there seems to be more vagueness than the model predicts.
+
+```{r visualize-posterior-predictive-group-sonia, echo = FALSE}
+n_observed <- 10
+
+par(mfrow=c(2, 3), cex.lab=1)
+
+for(d in 1:5){
+  col     <- quant_colors[d]
+  col_out <- quant_colors_strong[d]
+  col_in  <- quant_colors_light[d]
+  mu      <-  read.csv2(paste0('../output/model_sonia_ramotowska_t1_all_mu_', quant[d], '.csv'),
+                        header = TRUE, sep =';')
+  dat     <- dat_t1[grepl(paste0(quant[d], '$'), dat_t1$quant), ] 
+  
+  # compute observed proportions
+  percent_cat <- cut(dat$percent,
+                     breaks=seq(0, 100, by=n_observed))
+  prop_observed_group <- tapply(dat$resp, percent_cat, mean, na.rm = T)
+  props_lower    <- c(seq(0, 100, length.out=n_observed+1) + 1)[-(n_observed+1)]
+  props_upper    <- c(seq(0, 100, length.out=n_observed+1))[-1]
+  cperc_observed <- (props_upper - ((props_upper - props_lower) / 2))
+  cperc_observed <- (cperc_observed - 50) / 100
+  cperc          <- seq(-0.5, 0.5, length.out = 1e3)
+
+  mean_g <- mean(colMeans(mu)[grepl('g\\.', colnames(mu))])
+  mean_a <- mean(colMeans(mu)[grepl('a\\.', colnames(mu))])
+  pi <- modelPredictionsSonia(alpha = mean_a, 
+                              beta  = as.numeric(mu[colnames(mu) == 'mu_b']), 
+                              gamma = mean_g, 
+                              cperc = cperc)
+  
+  # backflip the data to its original scale
+  # 1="Fewer" 2="More"  3="Few"   4="Most"  5="Many"            
+  if(quant[d] == "Fewer" | quant[d] == "Few"){
+    cperc          <- (-1) * cperc
+    cperc_observed <- (-1) * cperc_observed
+  } else if(quant[d] == "Many"){
+    cperc          <- (-1) * cperc
+    cperc_observed <- (-1) * cperc_observed
+    pi                  <- 1 - pi
+    prop_observed_group <- 1 - prop_observed_group
+  }
+  
+  # plot
+  plot(cperc, pi,
+       type = 'l', lwd = 3, las = 1, bty = 'n', 
+       lty = 3, col = col, cex.lab=1.2,
+       xaxt = 'n', yaxt = 'n',
+       main = quant[d], 
+       xlab = 'Presented Proportion', 
+       ylab = 'Proportion of "true" responses',
+       xlim = c(-0.5, 0.5), ylim = c(0, 1))
+  axis(side =2, at = c(0, 0.5, 1), labels = c(0, 0.5, 1), las = 1)
+  axis(side =1, at = seq(-0.5, 0.5, by = 0.2), labels = seq(0, 100, by = 20))
+  points(cperc_observed, prop_observed_group, pch = 24, lwd = 2, col=col_out, bg=col_in)
+}
+```
+
+
+# Model comparison results
+
+```{r hypothesis-setup, echo = FALSE}
+hyps <- c('h1_1', 'h2_1', 'h2_2', 'h2_3')
+```
+
+```{r read-in-results, echo = FALSE, echo = FALSE}
+# Results
+Iprior <- Ipost <- data.frame(h1_1 = NA, h2_1 = NA, h2_2 = NA, h2_3 = NA)
+
+for(j in 1:nsim){
+  for(h in 1:length(hyps)){
+    
+    Iprior[j, hyps[h]] <- as.numeric(read.csv2(
+      paste0('../output/test_analysis_', hyps[h], '_prior_', j, '.csv'), header = TRUE))
+    Ipost[j , hyps[h]] <- as.numeric(read.csv2(
+      paste0('../output/test_analysis_', hyps[h], '_post_', j, '.csv'), header = TRUE))
+  
+ }
+}
+
+# Robustness Checks
+Iprior_robust <- Ipost_robust <- data.frame(scale = rep(c(1, 2), each = nrobust),
+                                          h1_1 = NA, h2_1 = NA, h2_2 = NA, h2_3 = NA)
+
+for(j in 1:nrobust){
+  for(k in 1:nscale){
+    for(h in 1:length(hyps)){
+      
+      Iprior_robust[Iprior_robust$scale==k,][j,hyps[h]] <- as.numeric(read.csv2(
+      paste0('../output/test_analysis_', hyps[h], '_prior_', k, '_', j, '_robust.csv'), header = TRUE))
+      Ipost_robust[Ipost_robust$scale==k,][j,hyps[h]] <- as.numeric(read.csv2(
+      paste0('../output/test_analysis_', hyps[h], '_post_', k, '_', j, '_robust.csv'), header = TRUE))
+      
+    }
+  }
+}
+
+# Marginal Likelihoods
+  results_m3_h1_2     <- data.frame(logml = rep(NA, 5), error = rep(NA, 5))
+  
+for(j in 1:nsim){
+  
+  results_m3_h1_2[j,] <- read.csv2(paste0('../output/test_analysis_h1_2_m3_'  , j, '.csv'), header = TRUE)
+}
+  
+  results_m4_h1_2 <- read.csv2(paste0('../output/test_analysis_h1_2_m4_1.csv'), header = TRUE)
+```
+
+```{r print-bf-table, echo = FALSE}
+# Create a results table with mean and ranges for each hypothesis
+  bf_table <- data.frame(Analysis = c('Main', 'Narrow Prior', 'Wide Prior'),
+                         `Hypothesis 1.1` = NA, 
+                         `Hypothesis 2.1` = NA, 
+                         `Hypothesis 2.2` = NA, 
+                         `Hypothesis 2.3` = NA,
+                         `Hypothesis 1.2` = NA)
+  
+  # main analysis
+  individual_bfs <- list(main   = cbind(Ipost/Iprior), 
+                         narrow = Ipost_robust[Ipost_robust$scale==1,2:5]/Iprior_robust[Iprior_robust$scale==1,2:5], 
+                         wide   = Ipost_robust[Ipost_robust$scale==2,2:5]/Iprior_robust[Iprior_robust$scale==2,2:5])
+  
+  means_and_ranges <- list()
+  for(i in 1:3){
+    
+  means_and_ranges[[i]] <- apply(individual_bfs[[i]], 2, 
+                            function(x) c(mean(x), range(x)))
+  means_and_ranges_text <- apply(means_and_ranges[[i]], 2, 
+                            function(x) papaja::apa_num(x, format='f'))
+  apa_style_results <- apply(means_and_ranges_text, 2, 
+                                function(x) paste(c(x[1], ' [', x[2], ', ', x[3], ']'), collapse=''))
+  
+  bf_table[i, 2:5] <- apa_style_results
+    
+  }
+  
+  # # add bridge sampling results (To-Do: add robustness results)
+  # bfs_hyp_1_2          <- exp(results_m3_h1_2$logml - as.numeric(results_m4_h1_2$logml))
+  # for(i in 1:3){
+  #   
+  # means_and_ranges_1_2[[i]] <- c(mean(bfs_hyp_1_2[[i]]), range(bfs_hyp_1_2[[i]]))
+  # means_and_ranges_text_1_2 <- apply(means_and_ranges_1_2[[i]], 2, 
+  #                           function(x) papaja::apa_num(x, format='e'))
+  # apa_style_results <- apply(means_and_ranges_text_1_2, 2, 
+  #                               function(x) paste(c(x[1], ' [', x[2], ', ', x[3], ']'), collapse=''))
+  # 
+  # bf_table[i, 6] <- apa_style_results
+  #   
+  # }
+
+papaja::apa_table(
+  bf_table
+  , caption = "Mean and ranges of Bayes factors for each of the four hypotheses. Bayes factors indicate evidence in favor of the ordinal constraint model compared to the encompassing model."
+  , note = "Results of main analysis are based on 5 repetitions, results of the robustness checks are based on 3 repetitions."
+  , escape = FALSE
+)
+
+# median response noise
+median_mu_log_a    <- sapply(post, function(x) median(x[, 'mu_log_a']))
+median_mu_g        <- sapply(post, function(x) median(x[, 'mu_g']))
+names(median_mu_g) <- names(median_mu_log_a) <- quant
+```
+
+```{r print-descriptives-table, echo = FALSE}
+# Create a results table with mean and ranges for each hypothesis
+  desc_table <- data.frame(Quantifier = dput(quant))
+  for(i in 1:length(params)){
+    desc_table[,params[i]] <- NA
+  }
+
+  # main analysis
+  median_and_sds <- list()
+  
+  for(i in 1:length(quant)){
+    
+  median_and_sds[[i]] <- apply(post[[i]][,params], 2, 
+                            function(x) quantile(x, c(0.5, 0.025, 0.975)))
+  median_and_sds_text <- apply(median_and_sds[[i]], 2,
+                            function(x) papaja::apa_num(x, format='f'))
+  apa_style_results <- apply(median_and_sds_text, 2,
+                                function(x) paste(c(x[1], ' [', x[2], ', ', x[3], ']'), collapse=''))
+
+  desc_table[i, 2:7] <- apa_style_results
+    
+  }
+#colnames(desc_table)[2:7] <- xaxis_labels
+
+papaja::apa_table(
+  desc_table
+  , caption = "Median and 95% credible intervals of group-level model parameters for each quantifier."
+  , escape = FALSE
+)
+```
+
+```{r visualize-quanitifers, echo=FALSE}
+params_plot <- c("mu_b", "mu_log_a", "mu_g")
+xlabs <- c('Threshold', 'Vagueness', 'Response Noise')
+
+# Descriptives plot: posterior estimates of the quantifiers in one plot
+params_plot <- c("mu_b", "mu_log_a", "mu_g")
+params_labels <- c(expression(mu[beta]),
+                   expression(mu[paste('log(', alpha, ')')]),
+                   expression(mu[gamma]))
+
+min         <- c(-0.2, -6, 0)
+max         <- c(0.2, 0, 0.2)
+densities <- x <- y <- list()
+ 
+for(p in 1:length(params_plot)){
+  
+  densities <- x <- y <- list()
+  
+  for(d in 1:length(quant)){
+    densities[[d]] <- density(post[[d]][,colnames(post[[d]]) == params_plot[p]])
+    y[[d]]         <- densities[[d]]$y
+    x[[d]]         <- densities[[d]]$x
+  }
+  
+  for(d in 1:length(quant)){
+  
+  if(d == 1){
+    
+    plot(densities[[1]],
+         xlim = c(min[p], max[p]),
+         ylim = c(0, max(unlist(y))),
+         las = 1,
+         bty = 'n',
+         main = params_labels[p],
+         ylab = '',
+         xlab = xlabs[p])
+    polygon(c(x[[1]][which(x[[1]] < max[p])], max[p], 0), c(y[[1]][which(x[[1]] < max[p])], 0, 0), 
+            col = transparentColor(quant_colors[d], percent = 50),
+            border = quant_colors_strong[d], xpd = FALSE)
+    
+  } else {
+    
+    polygon(c(x[[d]][which(x[[d]] < max[p])], max[p], 0), c(y[[d]][which(x[[d]] < max[p])], 0, 0), 
+            col = transparentColor(quant_colors[d], percent = 50),
+            border = quant_colors_strong[d], xpd = FALSE)
+    
+  }
+  legend('topright', legend = quant, fill = quant_colors, bg = "white", box.col = "white")
+  }
+}
+```
+
+## Are there differences in vagueness on the group and individual level? 
+
+We found `r .bayes_factor_labels(means_and_ranges[[1]][1,'h1_1'])` that a the group level quantifiers with vague meaning boundaries exhibit greater vagueness compared to sharp-meaning quantifiers, with a Bayes factor of `r papaja::apa_num(means_and_ranges[[1]][1,'h1_1'], format='g')`.
+
+This is in line with the descriptive pattern.
+Quantifiers with vague meaning boundaries, 'many', 'most', and 'few' have a median log-vagueness of `r papaja::apa_num(median_mu_log_a['Many'], format='g')`, `r papaja::apa_num(median_mu_log_a['Most'], format='g')`, and `r papaja::apa_num(median_mu_log_a['Few'], format='g')`, respectively. By contrast, quantifiers with sharp meaning boundaries, 'more than half' and 'fewer than half' have a median of `r papaja::apa_num(median_mu_log_a['More'], format='g')` and `r papaja::apa_num(median_mu_log_a['Fewer'], format='g')`, respectively.
+
+The hypotheses that vagueness does not occur on the individual level could not be tested. The reason for this is that we could not fit the model with no individual-level vagueness to our data. This is a strong indicator that the vagueness parameter is crucial, however, conducting a principled test was not possible.
+
+## Can we determine an order of response error rate for quantifiers?
+
+We found `r .bayes_factor_labels(means_and_ranges[[1]][1,'h2_1'])` that on the group-level there is an interaction effect between quantifier monotonicity and the sharpness of the meaning boundaries, with a Bayes factor of `r papaja::apa_num(means_and_ranges[[1]][1,'h2_1'], format='g')`.  
+
+Furthermore, we found `r .bayes_factor_labels(means_and_ranges[[1]][1,'h2_2'])` that on the group level upward entailing quantifiers trigger less response noise than downward entailing quantifiers, with a Bayes factor of `r papaja::apa_num(means_and_ranges[[1]][1,'h2_2'], format='g')`. 
+
+This is in line with the descriptive pattern.
+Upward entailing quantifiers such as, 'more than half', 'many', and 'most' have a median of `r papaja::apa_num(median_mu_g['More'], format='g')`,`r papaja::apa_num(median_mu_g['Many'], format='g')` and `r papaja::apa_num(median_mu_g['Most'], format='g')` respectively. By contrast, downward entailing quantifiers, 'fewer than half', and 'few' have a median of `r papaja::apa_num(median_mu_g['Fewer'], format='g')`, `r papaja::apa_num(median_mu_g['Few'], format='g')`, respectively.
+
+Lastly, we found `r .bayes_factor_labels(means_and_ranges[[1]][1,'h2_3'])` that on the group-level quantifiers with a sharp meaning boundary have trigger less response noise than quantifiers with a vague meaning boundary, with a Bayes factor of `r papaja::apa_num(means_and_ranges[[1]][1,'h2_3'], format='g')`.
+
+
+# Conclusions and Adaptations for the Blinded Analysis
+
+- With the current settings the maximum evidence we can detect is ~10 for Hypothesis 1.1, ~50 for Hypothesis 2.1, ~ 10 for Hypothesis 2.2, and  ~ 10 for Hypothesis 2.3. So even if all posterior samples obey the constraint, for 3 out of 4 hypotheses we will not be able to reach a conclusion. So maybe soften our Bayes factor criteria a bit to 9 instead of 10?
+
+- The group-level threshold parameters have been coded incorrectly; since the data are flipped,
+the group-level beta for quantifier "Few" should be 0.2 instead of -0.2. Similarly the group-level threshold for the quantifier "Many" should be -0.2 instead of 0.2. This coding error does not influence the interpretation of results for these data since we tested the response noise and the vagueness paramters. However, for the blinded/real data this needs to be fixed.
+
+- The bridge sampling method to assess the vagueness is not working; the model without vagueness is unable to fit the data. As a result we are unable to get a marginal likelihood for this model and we cannot compute Bayes factors. If we want to test hypothesis 1.2 we need to do that using a different method (or not set it to exactly 0 but to a value very close to zero?). Also the estimate mean squared error of the marginal likelihood is almost 20 percent, so I am not sure this method is very suitable.
+
+- It looks like the model is overestimating the response noise of participants. This could be an artifact since we are binning responses, of the priors pull the parameters towards higher values. 
+
+# Other model fit visualizations 
+
+## Prior and posterior Plot
+
+```{r prior-posterior-group, echo = FALSE}
+min    <- c(-6  , -0.5, 0, 0, 0, 0)
+max    <- c(0, 0.5, 0.5, 3, 0.5, 0.5) # xlim max for each parameter
+
+par(mfrow=c(3, 2), cex.lab=2, cex.main=1.5)
+ 
+for(d in 1:5){
+  
+  for(p in seq_along(params)){
+    
+    density_samps <- density(post[[d]][,colnames(post[[d]]) == params[p]])
+    y <- density_samps$y
+    x <- density_samps$x
+    
+    plot(density_samps,
+        xlim = c(min[p], max[p]),
+         las = 1,
+         bty = 'n',
+         main = quant[d],
+         ylab = '',
+         xlab = xaxis_labels[p])
+    polygon(c(x[which(x < max[p])], max[p], 0), c(y[which(x < max[p])], 0, 0), col = quant_colors[d],
+            border = quant_colors_strong[d], xpd = FALSE)
+    lines(density(prior[[d]][,colnames(prior[[d]]) == params[p]]), lty = 3, col = quant_colors_strong[d])
+    
+  }
+  
+}
+```
+
+It seems as if the group-level threshold parameters have been coded incorrectly; since the data are flipped, the group-level beta for quantifier "Few" should be 0.2 instead of -0.2. Similarly the group-level threshold for the quantifier "Many" should be -0.2 instead of 0.2. This coding error does not influence the interpretation of results for these data since we tested the response noise and the vagueness parameters. However, for the blinded/real data this needs to be fixed.
+
+Furthermore, we see that with this dataset and a samples size of _N = _`r length(unique(dat$workerid))`, the model does not learn anything about the standard deviations for the vagueness parameters.
+
+## Posterior predictive on the individual level
+
+```{r visualize-posterior-predictive-ind, echo = FALSE}
+n_observed <- 6
+
+par(mfrow=c(2, 3))
+
+for(d in 1:5){
+  col     <- quant_colors[d]
+  col_out <- quant_colors_strong[d]
+  col_in  <- quant_colors_light[d]
+  mu  <-  read.csv2(paste0('../output/ramotowska_t1_all_mu_', quant[d], '.csv'), header = TRUE, sep =';')
+  nind                <- length(colnames(mu)[grepl('^log_a', colnames(mu))])
+  dat                 <- dat_t1[grepl(paste0(quant[d], '$'), dat_t1$quant), ] 
+  
+  # compute observed proportions
+  percent_cat <- cut(dat$percent,
+                     breaks=seq(0, 100, length.out=n_observed+1))
+  prop_observed_ind <- tapply(dat$resp, list(percent_cat, dat$workerid), mean, na.rm = T)
+  props_lower    <- c(seq(0, 100, length.out=n_observed+1) + 1)[-(n_observed+1)]
+  props_upper    <- c(seq(0, 100, length.out=n_observed+1))[-1]
+  cperc_observed <- (props_upper - ((props_upper - props_lower) / 2))
+  cperc_observed <- (cperc_observed - 50) / 100
+  cperc          <- seq(-0.5, 0.5, length.out = 1e3)
+  
+  pi_ind <- matrix(NA, nrow = length(cperc), ncol = nind)
+  for(i in 1:nind){
+    pi_ind[,i] <- modelPredictions(alpha = exp(mu[colnames(mu) == paste0('log_a.', i, '.')]), 
+                               beta  = mu[colnames(mu) == paste0('b.', i, '.')], 
+                               gamma = mu[colnames(mu) == paste0('g.', i, '.')], 
+                               cperc = cperc)
+  }
+  
+  # backflip the data to its original scale
+  # 1="Fewer" 2="More"  3="Few"   4="Most"  5="Many"            
+  if(quant[d] == "Fewer" | quant[d] == "Few"){
+    cperc          <- (-1) * cperc
+    cperc_observed <- (-1) * cperc_observed
+  } else if(quant[d] == "Many"){
+    cperc          <- (-1) * cperc
+    cperc_observed <- (-1) * cperc_observed
+    pi_ind              <- 1 - pi_ind
+    prop_observed_ind   <- 1 - prop_observed_ind
+  }
+  
+  for(i in 1:nind){
+    plot(cperc, pi_ind[,i],
+         type = 'l', las = 1, lwd = 2, bty = 'n',
+         xaxt = 'n', yaxt = 'n',
+         main = paste(quant[d], i),
+         col = col, cex.lab=1.2,
+         xlab = 'Presented Proportion', 
+         ylab = 'Proportion of "true" responses',
+         xlim = c(-0.5, 0.5),
+         ylim = c(0, 1))
+    axis(side =2, at = c(0, 0.5, 1), labels = c(0, 0.5, 1), las = 1)
+    axis(side =1, at = seq(-0.5, 0.5, by = 0.2), labels = seq(0, 100, by = 20))
+    points(cperc_observed, prop_observed_ind[,i], pch = 24, lwd = 2, col=col_out, bg=col_in)
+  }
+}
+```
+
+Overall the model seems to fit the data well. It is apparent that some responses should have been excluded from the analysis.
+
+It looks like the model is overestimating the response noise of participants. This could be an artifact since we are binning responses, of the priors pull the parameters towards higher values. 
+
+It also looks like for some participants there is a dip for very high percentages. This could indicate that some participants have not one, but two meaning thresholds. 
+
+```{r visualize-posterior-predictive-ind-sonia, echo = FALSE}
+n_observed <- 6
+
+par(mfrow=c(2, 3))
+
+d=1
+#for(d in 1:5){
+  col     <- quant_colors[d]
+  col_out <- quant_colors_strong[d]
+  col_in  <- quant_colors_light[d]
+  mu  <-  read.csv2(paste0('../output/model_sonia_ramotowska_t1_all_mu_', quant[d], '.csv'), header = TRUE, sep =';')
+  nind                <- length(colnames(mu)[grepl('^a', colnames(mu))])
+  dat                 <- dat_t1[grepl(paste0(quant[d], '$'), dat_t1$quant), ] 
+  
+  # compute observed proportions
+  percent_cat <- cut(dat$percent,
+                     breaks=seq(0, 100, length.out=n_observed+1))
+  prop_observed_ind <- tapply(dat$resp, list(percent_cat, dat$workerid), mean, na.rm = T)
+  props_lower    <- c(seq(0, 100, length.out=n_observed+1) + 1)[-(n_observed+1)]
+  props_upper    <- c(seq(0, 100, length.out=n_observed+1))[-1]
+  cperc_observed <- (props_upper - ((props_upper - props_lower) / 2))
+  cperc_observed <- (cperc_observed - 50) / 100
+  cperc          <- seq(-0.5, 0.5, length.out = 1e3)
+  
+  pi_ind <- matrix(NA, nrow = length(cperc), ncol = nind)
+  for(i in 1:nind){
+    pi_ind[,i] <- modelPredictions(alpha = mu[colnames(mu) == paste0('a.', i, '.')], 
+                               beta  = mu[colnames(mu) == paste0('b.', i, '.')], 
+                               gamma = mu[colnames(mu) == paste0('g.', i, '.')], 
+                               cperc = cperc)
+  }
+  
+  # backflip the data to its original scale
+  # 1="Fewer" 2="More"  3="Few"   4="Most"  5="Many"            
+  if(quant[d] == "Fewer" | quant[d] == "Few"){
+    cperc          <- (-1) * cperc
+    cperc_observed <- (-1) * cperc_observed
+  } else if(quant[d] == "Many"){
+    cperc          <- (-1) * cperc
+    cperc_observed <- (-1) * cperc_observed
+    pi_ind              <- 1 - pi_ind
+    prop_observed_ind   <- 1 - prop_observed_ind
+  }
+  
+  for(i in 1:nind){
+    plot(cperc, pi_ind[,i],
+         type = 'l', las = 1, lwd = 2, bty = 'n',
+         xaxt = 'n', yaxt = 'n',
+         main = paste(quant[d], i),
+         col = col, cex.lab=1.2,
+         xlab = 'Presented Proportion', 
+         ylab = 'Proportion of "true" responses',
+         xlim = c(-0.5, 0.5),
+         ylim = c(-0.1, 1.1))
+    axis(side =2, at = c(0, 0.5, 1), labels = c(0, 0.5, 1), las = 1)
+    axis(side =1, at = seq(-0.5, 0.5, by = 0.2), labels = seq(0, 100, by = 20))
+    points(cperc_observed, prop_observed_ind[,i], pch = 24, lwd = 2, col=col_out, bg=col_in)
+  }
+#}
+```
+

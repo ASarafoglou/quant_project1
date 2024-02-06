@@ -1,0 +1,172 @@
+---
+title: "BlindingProtocol"
+author: "Alexandra Sarafoglou"
+date: "`r Sys.Date()`"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+# General Info
+
+This script reads in the original data, the blinding table, and the exclusion table. It unblinds the data and excludes participants based on the exclusions declared in the exclusion table. Then, the script excludes fast and slow responses based on cutoff criteria. This script outputs the following files:
+
+- 'data_preprocessed.csv': This file is preprocessed real data (with participant and response exclusions) which can be shared with AS and HG for further analysis AFTER they are happy with their analysis code and AFTER they uploaded their analysis script on the OSF.
+
+
+# Load and prepare original data
+
+```{r load-data}
+rm(list=ls())
+# shuffle sessions: "../PathToSession1", "../PathToSession2"
+session_datafiles   <- c("../data/exp1-replication-trials.csv",
+                         "../data/exp1-replication-trials.csv")
+session_datafiles   <- sample(session_datafiles)
+
+# read in data
+dat_orig_list <- list(dat_orig1 = read.csv(session_datafiles[1]),
+                      dat_orig2 = read.csv(session_datafiles[2]))
+quant     <- c('Few', 'Fewer than half', 'Many', 'More than half', 'Most')
+
+blinding_table <- read.csv('blinding_table.csv' , header = TRUE)
+exclusions     <- read.csv('exclusion_table.csv', header = TRUE)
+colnames(blinding_table)[-1] <- gsub('\\.', ' ', colnames(blinding_table)[-1])
+```
+
+- We flipped the true and false responses for few and fewer than half
+- We removed the quantifiers "all", "none", and "some" from the analysis
+
+```{r preprocessing, echo = FALSE}
+# preprocess for each element in list
+for(i in 1:2) {
+  
+  dat_orig_list[[i]]$quant <- gsub('\"', '', dat_orig_list[[i]]$quant)
+  dat_orig_list[[i]]       <- subset(dat_orig_list[[i]], quant %in% c('Few', 'Fewer than half', 'Many',
+                                        'More than half', 'Most'))
+  quant_many <- c('Many')
+  quant_pos  <- c('More than half', 'Most')
+  quant_neg  <- c('Few', 'Fewer than half')
+  dat_orig_list[[i]]$qq     <- factor(dat_orig_list[[i]]$quant)
+  
+  dat_orig_list[[i]]$resp     <- as.numeric(factor(dat_orig_list[[i]]$response)) - 1
+  dat_orig_list[[i]][dat_orig_list[[i]]$quant %in% quant_pos,]$resp <- ifelse(dat_orig_list[[i]][dat_orig_list[[i]]$quant %in% quant_pos,]$response=="true",1 , 0)
+  dat_orig_list[[i]][dat_orig_list[[i]]$quant %in% quant_neg,]$resp <- ifelse(dat_orig_list[[i]][dat_orig_list[[i]]$quant %in% quant_neg,]$response=="true",0 , 1)
+  # double flip 'many'
+  dat_orig_list[[i]][dat_orig_list[[i]]$quant %in% quant_many,]$resp    <- ifelse(dat_orig_list[[i]][dat_orig_list[[i]]$quant %in% quant_many,]$response=="true", 0 , 1)
+  dat_orig_list[[i]][dat_orig_list[[i]]$quant %in% quant_many,]$percent <- 100 - dat_orig_list[[i]][dat_orig_list[[i]]$quant %in% quant_many,]$percent
+  
+}
+```
+
+- Preregistered: quantifier and session cannot be identified
+- Data for each participant should stay the same (to identify participants who need to be excluded)
+- Quantifier labels should be shuffled within each participant
+- Worker ids stay intact to allow for matching between session 1 and session 2 
+- also look at histograms of reaction times for trial exclusion
+
+- Combine session 1 and session 2 data
+
+```{r combine-datasets}
+# combine datasets; distinguish between quantifiers in session 1 and 2
+for(i in 1:2) {
+  
+  dat_orig_list[[i]]$quant <- paste0(dat_orig_list[[i]]$quant, i)
+  dat_orig_list[[i]]$qq    <- paste0(dat_orig_list[[i]]$qq, i)
+  dat_orig_list[[i]]$qq    <- factor(dat_orig_list[[i]]$qq)
+  
+}
+
+dat_orig <- rbind(dat_orig_list[[1]], dat_orig_list[[2]])
+```
+
+# Unblind data
+
+```{r reorder-labels}
+nr_subjs  <- length(unique(exclusions$worker_id))
+
+for(i in 1:nr_subjs){
+  
+  # quantifiers need to be in original order
+  # To Julia: please validate this part!
+   exclusions[i, 3:ncol(exclusions)] <- exclusions[i, 3:ncol(exclusions)][order(unlist(blinding_table[i, 2:ncol(blinding_table)]))]
+   
+}
+
+colnames(exclusions)[-c(1, 2)] <- colnames(blinding_table)[-1]
+```
+
+# Exclude Participants and Quantifiers 
+
+Make sure AS and HG send you their exclusion table, before running this script.
+
+```{r real-exclusion, echo = FALSE}
+quantifiers <- unique(dat_orig$quant)
+subjects    <- unique(dat_orig$workerid)
+total_N     <- nrow(exclusions)
+nr_quants   <- length(unique(dat_orig$quant))
+
+nr_quants_excluded <- 0
+dat_orig$keep      <- TRUE
+
+for(i in 1:total_N){
+  
+  # check whether the participant needs to be excluded
+  exclude_participant <- exclusions[exclusions$worker_id == subjects[i], 'exclude_all']
+  
+  if(exclude_participant){
+    
+    dat_orig[dat_orig$workerid == subjects[i], 'keep'] <- FALSE
+    
+  } else {
+    
+    exclude_any_quants <- any(exclusions[exclusions$worker_id == subjects[i], 
+                                         quantifiers])
+    
+    if(exclude_any_quants) {
+      
+      quants_to_exclude  <- quantifiers[unlist(exclusions[exclusions$worker_id == subjects[i],
+                                                          quantifiers])]
+      
+      for(j in seq_along(quants_to_exclude)) {
+        
+        nr_quants_excluded <- nr_quants_excluded + 1
+        dat_orig[dat_orig$workerid == subjects[i] & dat_orig$quant == quants_to_exclude[j], ] <- FALSE
+        
+      }
+    } 
+  }
+}
+
+dat_orig <- dat_orig[dat_orig$keep, ]
+rm(subjects, nr_quants)
+```
+
+We excluded `r nr_excluded` out of  `r total_N` participants, which corresponds to `r round((nr_excluded/total_N) * 100, 2)` percent of the sample. From the remaining sample, we excluded `r nr_quants_excluded` quantifier conditions from the data. 
+
+# Exclude Responses
+
+Make sure AS and HG send you their cutoff criteria for fast and slow responses.
+
+```{r exclude-responses, eval = FALSE, echo = FALSE}
+cutoff_fast <- 300   # based on decision from AS and HG
+cutoff_slow <- 2500  # based on decision from AS and HG
+
+dat_orig$fast_response <- FALSE
+dat_orig$slow_response <- FALSE
+
+dat_orig[dat_orig$read_and_decide_time < cutoff_fast, 'fast_response'] <- TRUE
+dat_orig[dat_orig$read_and_decide_time > cutoff_slow, 'slow_response'] <- TRUE
+```
+
+From all `r nrow(dat_orig)` trials, we excluded `r sum(dat_orig$fast_response)` fast responses from the data, which corresponds to `r round((sum(dat_orig$fast_response)/nrow(dat_orig)) * 100, 2)` percent of all trials. In addition, we excluded `r sum(dat_orig$slow_response)` slow responses from the data, which corresponds to `r round((sum(dat_orig$slow_response)/nrow(dat_orig)) * 100, 2)` percent of all trials.
+
+# Export original preprocessed data 
+
+```{r export-preprocessed-dat_origa, eval = FALSE, echo = FALSE}
+dat_orig <- dat_orig[dat_orig$read_and_decide_time > cutoff_fast &  
+                     dat_orig$read_and_decide_time < cutoff_slow,]
+
+write.csv(dat_orig, file='data_preprocessed.csv', row.names = FALSE)
+```
+
+

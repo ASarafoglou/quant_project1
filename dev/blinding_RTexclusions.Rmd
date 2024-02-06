@@ -1,0 +1,188 @@
+---
+title: "BlindingProtocol"
+author: "Alexandra Sarafoglou"
+date: "`r Sys.Date()`"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+# General Info
+
+This script reads in the blinded data and the exclusion table. It excludes participants based on the exclusions declared in the exclusion table. Make sure AS and HG send you their exclusion table, before running this script. Then, for the remaining participants and quantifier conditions, it plots fast and slow responses. It also excludes fast and slow responses. Make sure AS and HG send you their cutoff criteria for fast and slow responses. This script outputs the following files:
+
+- html output: The html output contains the blinded reponse time distributions and should be shared with AS and HG before continuing to preprocess the data.
+- 'data_blinded_preprocessed.csv': This file is preprocessed blinded data (with participant and response exclusions) which can be shared with AS and HG for further analysis
+
+
+# Exclude Participants and Quantifiers based on visual inspection
+
+Make sure AS and HG send you their exclusion table, before running this script.
+
+```{r load-data, echo = FALSE}
+rm(list=ls())
+dat            <- read.csv('data_blinded.csv' , header = TRUE)
+# one exclusion table with joint decision from AS and HG
+exclusions     <- read.csv('exclusion_table.csv', header = TRUE) # try csv2 if separator is ";"
+quantifiers    <- unique(dat$quant)
+```
+
+```{r blinded-exclusion, echo = FALSE}
+subjects  <- unique(dat$workerid)
+total_N   <- nrow(exclusions)
+nr_quants <- length(unique(dat$quant))
+
+nr_quants_excluded <- 0
+dat$keep           <- TRUE
+
+for(i in 1:total_N){
+  
+  # check whether the participant needs to be excluded
+  exclude_participant <- exclusions[exclusions$worker_id == subjects[i], 'exclude_all']
+  
+  if(exclude_participant){
+    
+    dat[dat$workerid == subjects[i], 'keep'] <- FALSE
+    
+  } else {
+    
+    exclude_any_quants <- any(exclusions[exclusions$worker_id == subjects[i], 
+                                         quantifiers])
+    
+    if(exclude_any_quants) {
+      
+      quants_to_exclude  <- quantifiers[unlist(exclusions[exclusions$worker_id == subjects[i],
+                                                          quantifiers])]
+      
+      for(j in seq_along(quants_to_exclude)) {
+        
+        nr_quants_excluded <- nr_quants_excluded + 1
+        dat[dat$workerid == subjects[i] & dat$quant == quants_to_exclude[j], ] <- FALSE
+        
+      }
+    } 
+  }
+}
+
+dat <- dat[dat$keep, ]
+rm(subjects, nr_quants)
+```
+
+```{r, echo = FALSE}
+# new variables based on excluded data
+subjects    <- unique(dat$workerid)
+nr_subjs    <- length(unique(dat$workerid))
+nr_excluded <- total_N - nr_subjs
+nr_quants   <- length(unique(dat$quant))
+```
+
+We excluded `r nr_excluded` out of  `r total_N` participants, which corresponds to `r round((nr_excluded/total_N) * 100, 2)` percent of the sample. From the remaining sample, we excluded `r nr_quants_excluded` quantifier conditions from the data. 
+
+## Histogram of fast response times
+
+```{r visualize-fast-responses-all, echo = FALSE}
+# visualize everything below 1000ms
+hist(dat[dat$read_and_decide_time < 1000, 'read_and_decide_time'], 
+     main   = 'All participants',
+     las    = 1,
+     xlab   = 'Fast responses (in ms)',
+     border = 'white',
+     col    = '#80B1D3')
+abline(v=c(150, 200, 250, 300),
+       col=c('#A6761D', '#1B9E77', '#7570B3', 'red'),
+       lwd = 2,
+       lty = c(3, 3, 3, 1))
+legend('topright',
+       legend = c(150, 200, 250, 300),
+       col=c('#A6761D', '#1B9E77', '#7570B3', 'red'),
+       lty = c(3, 3, 3, 1),
+       lwd = 2
+       )
+```
+
+```{r visualize-fast-responses, echo = FALSE}
+# visualize everything below 1000ms
+par(mfrow=c(2, 3))
+for(i in 1:nr_subjs){
+  
+  hist(dat[dat$workerid == subjects[i] & dat$read_and_decide_time < 1000, 'read_and_decide_time'], 
+       main   = paste('Subject', subjects[i]),
+       las    = 1,
+       xlab   = 'Read and decide time (in ms)',
+       xlim   = c(0, 1000),
+       border = 'white',
+       col    = '#80B1D3')
+  abline(v=c(150, 200, 250, 300),
+         col=c('#A6761D', '#1B9E77', '#7570B3', 'red'),
+         lwd = 2,
+         lty = c(3, 3, 3, 1))
+
+}
+```
+
+
+## Histogram of slow response times
+
+```{r visualize-slow-responses-all, echo = FALSE}
+hist(dat[dat$read_and_decide_time < 5000, 'read_and_decide_time'], 
+     main   = 'All participants',
+     las    = 1,
+     xlab   = 'Slow responses (in ms)',
+     border = 'white',
+     col    = '#80B1D3')
+abline(v=c(2500, 3000, 3500, 4000),
+       col=c('red', '#A6761D', '#1B9E77', '#7570B3'),
+       lwd = 2,
+       lty = c(1, 3, 3, 3))
+legend('topright',
+       legend = c(2500, 3000, 3500, 4000),
+       col=c('red', '#A6761D', '#1B9E77', '#7570B3'),
+       lty = c(1, 3, 3, 3),
+       lwd = 2
+       )
+```
+
+```{r visualize-slow-responses, echo = FALSE}
+par(mfrow=c(2, 3))
+for(i in 1:nr_subjs){
+  
+  hist(dat[dat$workerid == subjects[i], 'read_and_decide_time'], 
+       main   = paste('Subject', subjects[i]),
+       las    = 1,
+       xlab   = 'Read and decide time (in ms)',
+       border = 'white',
+       col    = '#80B1D3')
+  abline(v=c(2500, 3000, 3500, 4000),
+         col=c('red', '#A6761D', '#1B9E77', '#7570B3'),
+         lwd = 2,
+         lty = c(1, 3, 3, 3))
+
+}
+```
+
+## Exclude fast and slow responses
+
+Make sure AS and HG send you their cutoff criteria for fast and slow responses.
+
+```{r exlcude-responses, eval = FALSE, echo = FALSE}
+cutoff_fast <- 300   # based on decision from AS and HG
+cutoff_slow <- 2500  # based on decision from AS and HG
+
+dat$fast_response <- FALSE
+dat$slow_response <- FALSE
+
+dat[dat$read_and_decide_time < cutoff_fast, 'fast_response'] <- TRUE
+dat[dat$read_and_decide_time > cutoff_slow, 'slow_response'] <- TRUE
+```
+
+From all `r nrow(dat)` trials, we excluded `r sum(dat$fast_response)` fast responses from the data, which corresponds to `r round((sum(dat$fast_response)/nrow(dat)) * 100, 2)` percent of all trials. In addition, we excluded `r sum(dat$slow_response)` slow responses from the data, which corresponds to `r round((sum(dat$slow_response)/nrow(dat)) * 100, 2)` percent of all trials.
+
+```{r export-preprocessed-data, eval = FALSE, echo = FALSE}
+dat <- dat[dat$read_and_decide_time > cutoff_fast &  
+           dat$read_and_decide_time < cutoff_slow,]
+
+write.csv(dat, file='data_blinded_preprocessed.csv', row.names = FALSE)
+```
+
+
+

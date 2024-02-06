@@ -24,6 +24,9 @@ source('../helper_functions/init_and_run_short.R')
 c1 <- transparentColor(color = "#B3DE69", percent = 50, name = 'colprior')
 c2 <- transparentColor(color = "#FCCDE5", percent = 50, name = 'colpost')
 c3 <- transparentColor(color = "grey36", percent = 50, name = 'colpost')
+
+band_color <- transparentColor(color = "grey36", percent = 90, name = 'colpost')
+hist_color <- transparentColor(color = "#1B9E77", percent = 70, name = 'colpost')
 ```
 
 ```{r read-data}
@@ -49,7 +52,7 @@ Run all stan models.
 ```{r set-inits-devel, eval = TRUE}
 run_all    <- FALSE
 prior      <- FALSE
-modelname  <- 'mod_partial_exp_t1'
+modelname  <- 'mod_partial_exp'
 
 if(run_all){
   
@@ -142,7 +145,7 @@ for(s in 1:nsims){
     rho_g_raw <- NULL
     for(d in 1:predat$D){
       
-      rho_a_raw[d] <- rbeta(1, 4, 4) # favor values around 0
+      rho_a_raw[d] <- rbeta(1, 4, 4) # favor values around  0
       rho_b_raw[d] <- rbeta(1, 5, 3) # favor values between 0 and 0.5
       rho_g_raw[d] <- rbeta(1, 5, 3) # favor values between 0 and 0.5
       
@@ -437,215 +440,6 @@ if(prior){
 }
 ```
 
-```{r run-model-sonia-prior, eval = FALSE}
-# make sure you loaded the correct dataset: "/exp1-preprocessed-all.csv"
-# make sure you load the correct model: "mod_partial_exp_t1_prior"
-filename   <- "mod_partial_exp_t1_prior.stan"
-model_list <- rstan::stan_model(file = paste0('../models/', filename))
-
-# fit the model to each quantifier individually
-dat_t1    <- read.csv('../data/exp1-preprocessed-all.csv', header = TRUE)
-# make quantifiers identifiable: keep only first word so it matches quant
-dat_t1$quant <- stringr::word(dat_t1$quant, 1)
-
-set.seed(4491)
-for(d in 1:length(quant)){
-  
-  dat              <- dat_t1[grepl(paste0(quant[d], '$'), dat_t1$quant), ] 
-  predat           <- getDat(dat, prior = FALSE)
-  predat$mu_b_mean <- mu_b_mean[d]
-  
-  logmodfit <- myRunner(predat
-                      , mod = model_list
-                      , iter = niter
-                      , ncores = nchains
-                      , warmup = nwarmup
-                      , control = list(adapt_delta = .99, max_treedepth = 17)
-                      , nchains = nchains)
-
-  # (1) remove divergent transitions and thin the chains
-  samples_processed <- removeDivergentTransitions(logmodfit, nchains = nchains)
-  samples_processed <- samples_processed[seq(from=1, to=nrow(samples_processed), by = 50),]
-  
-  # (2) compute the posterior means
-  mus  <- apply(samples_processed, 2, mean)
-  
-  # (2) export parameter values
-  write.csv2(t(as.data.frame(mus)), paste0('../output/ramotowska_t1_all_mu_prior', quant[d], '.csv'), 
-             row.names = FALSE)
-  write.csv2(samples_processed,
-             paste0('../output/ramotowska_t1_all_prior', quant[d], '.csv'),
-             row.names = FALSE)
-}
-```
-
-```{r run-model-sonia, eval = FALSE}
-# make sure you loaded the correct dataset: "/exp1-preprocessed-all.csv"
-# make sure you load the correct model: "mod_partial_exp_t1"
-filename   <- "mod_partial_exp_t1.stan"
-model_list <- rstan::stan_model(file = paste0('../models/', filename))
-
-# fit the model to each quantifier individually
-dat_t1    <- read.csv('../data/exp1-preprocessed-all.csv', header = TRUE)
-# make quantifiers identifiable: keep only first word so it matches quant
-dat_t1$quant <- stringr::word(dat_t1$quant, 1)
-
-set.seed(4491)
-for(d in 2:length(quant)){
-  
-  dat              <- dat_t1[grepl(paste0(quant[d], '$'), dat_t1$quant), ] 
-  predat           <- getDat(dat, prior = FALSE)
-  predat$mu_b_mean <- mu_b_mean[d]
-  
-  logmodfit <- myRunner(predat
-                      , mod = model_list
-                      , iter = niter
-                      , ncores = nchains
-                      , warmup = nwarmup
-                      , control = list(adapt_delta = .99, max_treedepth = 17)
-                      , nchains = nchains)
-
-  # (1) remove divergent transitions and thin the chains
-  samples_processed <- removeDivergentTransitions(logmodfit, nchains = nchains)
-  samples_processed <- samples_processed[seq(from=1, to=nrow(samples_processed), by = 50),]
-  
-  # (2) compute the posterior means
-  mus  <- apply(samples_processed, 2, mean)
-  
-  # (2) export parameter values
-  write.csv2(t(as.data.frame(mus)), paste0('../output/ramotowska_t1_all_mu_', quant[d], '.csv'), 
-             row.names = FALSE)
-  write.csv2(samples_processed,
-             paste0('../output/ramotowska_t1_all_', quant[d], '.csv'),
-             row.names = FALSE)
-}
-```
-
-```{r visualize-posterior-predictive-group, eval = FALSE}
-par(mfrow=c(2, 3))
-
-for(d in 1:5){
-  mu <-  read.csv2(paste0('../output/ramotowska_t1_all_mu_', quant[d], '.csv'),
-                         header = TRUE, sep =';')
-  dat                 <- dat_t1[grepl(paste0(quant[d], '$'), dat_t1$quant), ] 
-  prop_observed_group <- tapply(dat$resp, dat$percent_cat, mean, na.rm = T)
-  cperc_observed <- c(25 - ((25-1) / 2),
-                      40 - ((40-26) / 2), 
-                      50 - ((50-41) / 2), 
-                      60 - ((60-51) / 2), 
-                      75 - ((75-61) / 2), 
-                      100 - ((100-76) / 2))/100 - 0.5
-  cperc <- seq(-0.5, 0.5, length.out = 1e3)
-  
-  # plot
-  plot(cperc, modelPredictions(alpha = exp(mu[colnames(mu) == 'mu_log_a']), 
-                               beta  = mu[colnames(mu) == 'mu_b'], 
-                               gamma = mu[colnames(mu) == 'mu_g'], 
-                               cperc = cperc),
-       type = 'l',
-       lwd = 2,
-       las = 1,
-       bty = 'n',
-       main = quant[d],
-       xlab = 'Presented Proportion',
-       ylab = 'p("True")',
-       xlim = c(-0.5, 0.5),
-       ylim = c(0, 1))
-points(cperc_observed, prop_observed_group, pch = 2, lwd = 2)
-}
-```
-
-```{r prior-posterior-group, eval = FALSE}
-par(mfrow=c(2, 3))
-
-for(d in 1:5){
-  prior <- read.csv2(paste0('../output/ramotowska_t1_all_prior', quant[d], '.csv'),
-                         header = TRUE, sep =';')
-  post  <-  read.csv2(paste0('../output/ramotowska_t1_all_', quant[d], '.csv'),
-                         header = TRUE, sep =';')
-  # mus
-  plot(density(exp(post[,colnames(post) == 'mu_log_a'])),
-       xlim = c(0, 0.4),
-       las = 1,
-       bty = 'n',
-       main = paste('Mu Vagueness:', quant[d]))
-  lines(density(exp(prior[,colnames(prior) == 'mu_log_a'])), lty = 3)
-  
-  plot(density(post[,colnames(post) == 'mu_b']),
-       xlim = c(-0.5, 0.5),
-       las = 1,
-       bty = 'n',
-       main = paste('Mu Threshold:', quant[d]))
-  lines(density(prior[,colnames(prior) == 'mu_b']), lty = 3)
-  
-  plot(density(post[,colnames(post) == 'mu_g']),
-       xlim = c(0, 0.5),
-       las = 1,
-       bty = 'n',
-       main = paste('Mu Response noise:', quant[d]))
-  lines(density(prior[,colnames(prior) == 'mu_g']), lty = 3)
-  
-  # sigmas
-  plot(density(exp(post[,colnames(post) == 'sigma_mu_log_a'])),
-       xlim = c(0, 4),
-       las = 1,
-       bty = 'n',
-       main = paste('Sd Vagueness:', quant[d]))
-  lines(density(exp(prior[,colnames(prior) == 'sigma_mu_log_a'])), lty = 3)
-  
-  plot(density(post[,colnames(post) == 'sigma_mu_b']),
-       xlim = c(0, 0.5),
-       las = 1,
-       bty = 'n',
-       main = paste('Sd Threshold:', quant[d]))
-  lines(density(prior[,colnames(prior) == 'sigma_mu_b']), lty = 3)
-                      
-  plot(density(post[,colnames(post) == 'sigma_mu_g']),
-       xlim = c(0, 0.5),
-       las = 1,
-       bty = 'n',
-       main = paste('Sd Response noise:', quant[d]))
-  lines(density(prior[,colnames(prior) == 'sigma_mu_g']), lty = 3)
-  
-}
-```
-
-```{r visualize-posterior-predictive-ind, eval = FALSE}
-par(mfrow=c(2, 3))
-
-
-for(d in 1:3){
-  mu <-  read.csv2(paste0('../output/ramotowska_t1_all_mu_', quant[d], '.csv'),
-                         header = TRUE, sep =';')
-  nind                <- length(colnames(mu)[grepl('^log_a', colnames(mu))])
-  dat                 <- dat_t1[grepl(paste0(quant[d], '$'), dat_t1$quant), ] 
-  prop_observed_ind   <- tapply(dat$resp, list(dat$percent_cat, dat$workerid), mean, na.rm = T)
-  cperc_observed <- c(25 - ((25-1) / 2),
-                      40 - ((40-26) / 2), 
-                      50 - ((50-41) / 2), 
-                      60 - ((60-51) / 2), 
-                      75 - ((75-61) / 2), 
-                      100 - ((100-76) / 2))/100 - 0.5
-  cperc <- seq(-0.5, 0.5, length.out = 1e3)
-  
-  for(i in 1:nind){
-    plot(cperc, modelPredictions(alpha = exp(mu[colnames(mu) == paste0('log_a.', i, '.')]), 
-                                 beta  = mu[colnames(mu) == paste0('b.', i, '.')], 
-                                 gamma = mu[colnames(mu) == paste0('g.', i, '.')], 
-                                 cperc = cperc),
-         type = 'l',
-         las = 1,
-         lwd = 2,
-         bty = 'n',
-         main = paste(quant[d], i),
-         xlab = 'Presented Proportion',
-         ylab = 'p("True")',
-         xlim = c(-0.5, 0.5),
-         ylim = c(0, 1))
-    points(cperc_observed, prop_observed_ind[,i], pch = 2, col = 'red', lwd = 2)
-  }
-}
-```
 
 # Model validation 
 
@@ -694,7 +488,7 @@ lines(cperc, modelPredictions(alpha = exp(mu_prior[colnames(mu_prior) == 'mu_log
 ```{r inspect-predicted-responses, eval = FALSE}
 predat    <- getDat(dat_t1, dat_t2, prior = prior)
 vec       <- c(0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100)
-predat$qq <- as.numeric(dat_t1$qq)
+predat$qq <- as.numeric(as.factor(dat_t1$qq))
 predat$cperc_t1       <- predat$cperc_t1 * 100 + 50
 predat$percent_cat_t1 <- cut(predat$cperc_t1,
                              breaks=vec,
@@ -714,6 +508,7 @@ for(d in 1:length(quant)){
 # predicted responses on a group level
 for(d in 1:length(quant)){
   predat$quant_name <- quant[d]
+  predat$D          <- 1
   analyzePredictedResponsesR(y_pred=y_pred_dat[[d]][1:4000,]   , predat, testtime = 't1', individual = TRUE)
   analyzePredictedResponsesR(y_pred=y_pred_dat[[d]][4001:8000,], predat, testtime = 't2', individual = TRUE)
 }
@@ -764,6 +559,17 @@ for(i in 1:nrow(pars)) pairs(logmodfit, pars = pars[i,])
 
 ```{r inspect-response-patterns, eval = FALSE}
 if(max(predat$cperc) < 1) predat$cperc <- predat$cperc * 100 + 50
+
+# n_observed <- 10
+# predat$percent_cat <- cut(predat$percent, breaks=seq(0, 100, by=n_observed))
+# 
+#   prop_observed_group <- tapply(dat$resp, percent_cat, mean, na.rm = T)
+#   props_lower    <- c(seq(0, 100, length.out=n_observed+1) + 1)[-(n_observed+1)]
+#   props_upper    <- c(seq(0, 100, length.out=n_observed+1))[-1]
+#   cperc_observed <- (props_upper - ((props_upper - props_lower) / 2))
+#   cperc_observed <- (cperc_observed - 50) / 100
+#   cperc          <- seq(-0.5, 0.5, length.out = 1e3)
+
 predat$percent_cat <- cut(predat$cperc,
                       breaks=c(0, 20, 40, 60, 80, 100),
                       labels=c("1-20","21-40","41-60", "61-80", "81-100"))
@@ -800,8 +606,9 @@ Simulation based calibration.
 - step 2: fit the model to the simulated data
 
 ```{r initialize-simulation-study}
-d = 4 # choose quantifier
-model_list     <- rstan::stan_model(file = paste0('../models/', modelname, '.stan'))
+#model_list     <- rstan::stan_model(file = paste0('../models/', modelname, '.stan'))
+
+d = 3 # choose quantifier
 nsims_target   <- 100
 nsims_ready    <- length(list.files('../output/', 
                                     pattern=paste0("sim_mu_post_", modelname, '_', quant[d]), 
@@ -879,7 +686,20 @@ for(i in 1:nsims){
 
 
 ```{r load-sim-files}
-npars          <- ncol(sbc_prior)
+npars          <- ncol(sbc_prior) # 192
+nsims_ready    <- length(list.files('../output/', 
+                                    pattern=paste0("sim_mu_post_", modelname, '_', quant[d]), 
+                                    full.names = TRUE, recursive = TRUE))
+
+if(d == 3){
+  nsims_fewer <- length(list.files('../output/', 
+                                    pattern=paste0("sim_mu_post_", modelname, '_', quant[1]), 
+                                    full.names = TRUE, recursive = TRUE))
+  nsims_all   <- length(list.files('../output/', 
+                                    pattern=paste0("sim_mu_post_", modelname, '_', quant[d]), 
+                                    full.names = TRUE, recursive = TRUE))
+  nsims_ready <- nsims_all - nsims_fewer
+}
 
 # compute necessary quantities
   rank           <- data.frame(matrix(nrow = 0, ncol = npars))
@@ -888,11 +708,11 @@ npars          <- ncol(sbc_prior)
   ci_post        <- list()
   colnames(rank) <- colnames(mu_post) <- colnames(var_post) <- par_names_post
 
-d=2
+  
 # for(d in 1:5){
   for(i in 1:nsims_ready){
-    
-     mu_post[nrow(mu_post) + 1,] <-  t(read.csv2(paste0('../output/sim_mu_post_', modelname, '_', quant[d], i, '.csv'),
+     
+    mu_post[nrow(mu_post) + 1,] <-  t(read.csv2(paste0('../output/sim_mu_post_', modelname, '_', quant[d], i, '.csv'),
                              header = TRUE, sep =';'))
      var_post[nrow(var_post) + 1,] <-  t(read.csv2(paste0('../output/sim_var_post_', modelname, '_', quant[d], i, '.csv'),
                              header = TRUE, sep =';'))
@@ -914,11 +734,40 @@ d=2
 # plot the historgrams
 par(mfrow=c(2, 3))
 
+# we chose L=10, since we aim for N/(0.5*L) = 20
+# 9 bins which is why L = 10
+L = 10
+hbins <- seq(0,100,length.out=L)
+binom <- qbinom(c(0.005,0.5,0.995), nrow(rank),  1/(L)) 
+  
+x <- seq(from = 0, to = nrow(rank))
+y <- array(NA, dim = length(x))
+y.upper <- y
+y.lower <- y
+for (i in 1:length(x)) {
+    y[i]       <- binom[2]
+    y.upper[i] <- binom[3]
+    y.lower[i] <- binom[1]
+}
+
 for(j in 1:npars){
-    
-  hist(rank[, j], las = 1, 
+  
+  hist_param <- hist(rank[, j], 
+                     breaks = hbins, 
+                     plot=FALSE)
+  plot(1, type='n',
+       las = 1, 
        main = par_names_post[j], 
-       xlab = 'Rank')
+       xlab = 'Rank', ylab = 'Frequency',
+       bty='n', cex.lab=1.5,
+       xlim = c(0, 100),
+       ylim = c(0, max(binom) + 5)
+  ) 
+  polygon(c(x, rev(x)), c(y.upper, rev(y.lower)), col = band_color, border = NA)
+  lines(x, y, lwd = 2)
+  lines(x, y.upper, lty = 3)
+  lines(x, y.lower, lty = 3)
+  plot(hist_param, col = hist_color, add = TRUE) # Add 2nd histogram using different color
     
 }
 ```
@@ -955,13 +804,14 @@ for(j in 1:npars){
        ylim = c(-4, 4),
        las = 1, bty = 'n',
        pch = 21,
-       col = 'grey36', bg = c3)
+       col = 'grey36', bg = band_color)
   points(mean(contraction[,j]), mean(z[, j]),
-         col = 'blue',
-         pch = 18)
+         col='blue', cex = 2,
+         pch = 4, lwd = 2)
   abline(h=0, lty=3)
     
 }
+
 ```
 
 ## Parameter Recovery and Coverage Probability (Posterior)
@@ -984,9 +834,9 @@ for(j in 1:npars){
        main = par_names_post[j],
        las = 1, bty = 'n',
        pch = 21,
-       col = 'grey36', bg = c3)
+       col = 'grey36', bg = band_color)
   abline(0, 1)
- # text(pos_x, pos_y, labels=paste0('r =', round(correlation, 2)), font=2, cex = 1.5)
+# text(pos_x, pos_y, labels=paste0('r =', round(correlation, 2)), font=2, cex = 1.5)
 }
 ```
 
