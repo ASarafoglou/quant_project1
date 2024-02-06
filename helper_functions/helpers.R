@@ -1,3 +1,29 @@
+.bayes_factor_labels <- function(x) {
+  label <- dplyr::case_when(
+    (x <= 1/100)            ~ 'extreme evidence against the hypothesis',
+    (1/100 <= x & x < 1/30) ~ 'very strong evidence against the hypothesis',
+    (1/30  <= x & x < 1/10) ~ 'strong evidence against the hypothesis',
+    (1/10  <= x & x < 1/3)  ~ 'moderate evidence against the hypothesis',
+    (1/3   <= x & x < 3)    ~ 'inconclusive evidence',
+    (3     <= x & x < 10)   ~ 'moderate evidence in favor of the hypothesis',
+    (10    <= x & x < 30)   ~ 'strong evidence in favor of the hypothesis',
+    (30    <= x & x < 100)  ~ 'very strong evidence in favor of the hypothesis',
+    (100 <= x)              ~ 'extreme evidence in favor of the hypothesis',
+  )
+  return(label)
+}
+
+.evaluateHypotheses <- function(Hr, samples, param_name='mu_g'){
+  
+  # default: from large to small
+  samps      <- sapply(samples, function(x) x[, param_name])
+  order_seen <- apply(samps, 1, function(x) paste0(order(x), collapse=''))
+  
+  proportion <- mean(sapply(order_seen, function(x) stringr::str_detect(x, Hr)))
+  
+  return(proportion)
+}
+
 # compute model predictions
 modelPredictions <- function(alpha, beta, gamma, cperc){
   
@@ -13,6 +39,18 @@ modelPredictions <- function(alpha, beta, gamma, cperc){
   return(pi)
   
 }
+modelPredictionsSonia <- function(alpha, beta, gamma, cperc){
+  
+  alpha <- as.numeric(alpha)
+  beta <- as.numeric(beta)
+  gamma <- as.numeric(gamma)
+  
+  mu <- (cperc - beta)/alpha
+  pi <-  gamma + (1 - 2 * gamma) * (1/(1+exp(-mu)))
+  
+  return(pi)
+  
+}
 
 # other helper functions
 transparentColor <- function(color, percent = 50, name = NULL) {
@@ -25,7 +63,7 @@ transparentColor <- function(color, percent = 50, name = NULL) {
                alpha = (100 - percent) * 255 / 100,
                names = name)
 
-  invisible(t.col)
+  return(t.col)
 }
 
 drawDistribution <- function(pid, quantifier = 'Fewer than half', parameter = 'alpha', 
@@ -152,12 +190,6 @@ analyzePredictedResponses <- function(samples_processed, predat,
     pred_responses <- samples_processed[, pred_names]
     pred_responses_orig <- pred_responses
     colnames(pred_responses_orig) <- paste0('y_pred_', 1:length(pred_names))
-    write.csv2(pred_responses_orig,
-               paste0('../output/prior_pred_', modelname, time, '.csv'),
-               row.names = FALSE)
-    write.csv2(samples_processed[, hyperparam_names],
-               paste0('../output/prior_pred_hyper_', modelname, time, '.csv'),
-               row.names = FALSE)
     # random row
     random_row            <- sample(1:nrow(pred_responses), 1)
     predat$pred_responses <- pred_responses[random_row, ]
@@ -245,11 +277,8 @@ analyzePredictedResponses <- function(samples_processed, predat,
     output[['constrained_vagueness']] <- obey3
     
   } else {
-    
+    browser()
     # Posterior predictive checks
-    write.csv2(samples_processed[, hyperparam_names],
-               paste0('../output/post_pred_hyper_', modelname, '.csv'),
-               row.names = FALSE)
     pred_names <- colnames(samples_processed)[grepl('y_postpred', colnames(samples_processed))]
     pred_responses        <- samples_processed[, pred_names]
     predat$pred_responses <- apply(pred_responses, 2, mean)
@@ -332,7 +361,7 @@ analyzePredictedResponses <- function(samples_processed, predat,
 }
 
 analyzePredictedResponsesR <- function(y_pred, predat, individual = FALSE, testtime = NULL) {
-  
+
   if(predat$D > 1) {
     lineCols <- RColorBrewer::brewer.pal(predat$D, 'Dark2')
     } else {
